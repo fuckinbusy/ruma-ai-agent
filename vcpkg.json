@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "winaiagent",
+  "version-string": "0.0.1",
+  "dependencies": [
+    { "name": "freetype", "default-features": false, "features": ["error-strings"] },
+    { "name": "harfbuzz", "default-features": false, "features": ["freetype"] },
+    { "name": "glad", "default-features": false, "features": ["loader", "gl-api-45", "wgl", "extensions"] },
+    "stb",
+    "glaze",
+    "md4c",
+    "miniz",
+    { "name": "curl", "default-features": false, "features": ["ssl", "http2"] },
+    { "name": "imgui", "features": ["win32-binding", "opengl3-binding"] }
+  ]
+}

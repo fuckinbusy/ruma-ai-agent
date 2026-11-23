@@ -1,0 +1,9 @@
+// Made by src/ai/CMakeLists.txt from src/ai/prompts/system.md: edit that file, not this one.
+
+#include "ai/prompt.hpp"
+
+namespace ai::detail {
+
+const std::string_view kSystemPrompt = R"wa_prompt(@WA_SYSTEM_PROMPT@)wa_prompt";
+
+} // namespace ai::detail
