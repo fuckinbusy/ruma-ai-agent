@@ -69,7 +69,7 @@ auto module_path() -> std::filesystem::path;
 auto data_dir_beside(const std::filesystem::path& exe) -> std::optional<std::filesystem::path>;
 
 // The data folder of the agent at `exe`: the installed agent's (its exe under `program_files`)
-// is the user's %LOCALAPPDATA%\WinAiAgent\data (Program Files is the administrators'); a build's
+// is the user's %LOCALAPPDATA%\Ruma\data (Program Files is the administrators'); a build's
 // is beside it when it has one, otherwise %LOCALAPPDATA%\Agent.
 auto data_dir_for(const std::filesystem::path& exe, const std::filesystem::path& program_files,
                   const std::filesystem::path& local_app_data) -> std::filesystem::path;
@@ -77,6 +77,9 @@ auto data_dir_for(const std::filesystem::path& exe, const std::filesystem::path&
 // The agent's data folder: beside this program when it has one, otherwise %LOCALAPPDATA%\Agent
 // (%TEMP%\Agent when even that is unknown).
 auto agent_data_dir() -> std::filesystem::path;
+// The data kept before the rename (%LOCALAPPDATA%\WinAiAgent, 2026-11-25) moved whole to the product's
+// folder, when that is not there yet: true when it moved. The agent's start and the installer ask it.
+auto adopt_old_data(const std::filesystem::path& local_app_data) -> bool;
 
 // The process's multithreaded apartment, kept from the first call to the end of the process.
 // Called before any WinRT use: C++/WinRT keeps every factory it gets for the whole process, but

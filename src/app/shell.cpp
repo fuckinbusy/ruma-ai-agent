@@ -1,5 +1,6 @@
 #include "app/shell.hpp"
 #include "app/spend.hpp"
+#include "core/product.hpp"
 
 #include "ai/catalog.hpp"
 #include "app/backdrop.hpp"
@@ -646,7 +647,7 @@ auto Shell::start(const std::filesystem::path& data_dir) -> bool {
     placed_ = placement::canvas(monitor_); // made at the agent's largest (motion rework, task 5)
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED |
                                     WS_EX_TRANSPARENT,
-                                kClassName, L"Agent", WS_POPUP, placed_.window.left, placed_.window.top,
+                                kClassName, WA_PRODUCT_WIDE, WS_POPUP, placed_.window.left, placed_.window.top,
                                 placed_.window.right - placed_.window.left,
                                 placed_.window.bottom - placed_.window.top, nullptr, nullptr, instance, this);
     if (hwnd == nullptr) {
@@ -997,7 +998,7 @@ auto Shell::register_hotkey() -> bool {
     live_hotkey_ = hotkeys::register_first(candidates, r);
     if (!live_hotkey_) {
         MessageBoxW(nullptr, L"No keyboard shortcut is free for the agent.\nOpen it from the tray icon.",
-                    L"Agent", MB_OK | MB_ICONWARNING);
+                    WA_PRODUCT_WIDE, MB_OK | MB_ICONWARNING);
         return false;
     }
     WA_INFO("app", "hotkey {}", *live_hotkey_);
@@ -1008,7 +1009,7 @@ auto Shell::register_hotkey() -> bool {
         const std::wstring text = L"The shortcut " + wide(config_.hotkey) +
                                   L" is taken by another program.\nThe agent opens with " + wide(*live_hotkey_) +
                                   L" instead.";
-        MessageBoxW(nullptr, text.c_str(), L"Agent", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(nullptr, text.c_str(), WA_PRODUCT_WIDE, MB_OK | MB_ICONINFORMATION);
     }
     return true;
 }
@@ -1241,7 +1242,7 @@ void Shell::show_tray_menu() {
         wc.lpszClassName = kMenuClassName;
         return RegisterClassExW(&wc) != 0;
     }();
-    HWND hwnd = registered ? CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kMenuClassName, L"WinAiAgent", WS_POPUP, 0, 0, 1, 1,
+    HWND hwnd = registered ? CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kMenuClassName, WA_PRODUCT_WIDE, WS_POPUP, 0, 0, 1, 1,
                                              nullptr, nullptr, instance, this)
                            : nullptr;
     if (hwnd == nullptr) {
@@ -1611,7 +1612,7 @@ void Shell::open_rules() {
 // "Forget all": asked first — it cannot be taken back.
 void Shell::forget_all() {
     const int choice = MessageBoxW(nullptr, L"Forget everything the agent remembers about you? This cannot be undone.",
-                                   L"Agent", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST);
+                                   WA_PRODUCT_WIDE, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST);
     if (choice != IDYES) {
         return;
     }
@@ -1656,7 +1657,7 @@ auto Shell::change_hotkey(const std::string& to) -> bool {
     const std::wstring keeps = live_hotkey_ ? L"The agent keeps " + wide(*live_hotkey_) + L"."
                                             : std::wstring{L"Open the agent from the tray icon."};
     const std::wstring text = L"The shortcut " + wide(to) + L" is taken by another program.\n" + keeps;
-    MessageBoxW(nullptr, text.c_str(), L"Agent", MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(nullptr, text.c_str(), WA_PRODUCT_WIDE, MB_OK | MB_ICONINFORMATION);
     return false;
 }
 
@@ -4099,7 +4100,7 @@ auto run(const Options& options) -> int {
     Shell shell{options};
     if (!shell.start(data_dir)) {
         MessageBoxW(nullptr, L"The agent could not start. See the log in %LOCALAPPDATA%\\Agent\\logs.",
-                    L"Agent", MB_OK | MB_ICONERROR);
+                    WA_PRODUCT_WIDE, MB_OK | MB_ICONERROR);
         return 2;
     }
     return shell.loop();

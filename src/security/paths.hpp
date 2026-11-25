@@ -58,12 +58,17 @@ struct Roots {
     std::wstring users;         // C:\Users
     std::wstring local_app_data;
     std::wstring roaming_app_data;
-    std::vector<std::wstring> agent_dirs; // %LOCALAPPDATA%\Agent, and <program>\data in a portable build
+    std::vector<std::wstring> agent_dirs; // see agent_dirs_for()
     std::vector<std::wstring> secret_dirs;
 };
 
-// For the current user; the agent's folders are %LOCALAPPDATA%\Agent and, in a portable build,
-// the data folder beside `exe` (core::win::data_dir_beside). Resolved (see resolve()).
+// The agent's own folders for the program at `exe`: %LOCALAPPDATA%\Agent, the data folder beside
+// it in a portable build (core::win::data_dir_beside), and, installed under one of `program_files`,
+// its data folder (core::win::data_dir_for) and the one kept before the rename until it is moved.
+// Not resolved. The program's own folder is not among them: under Program Files it is System.
+auto agent_dirs_for(const std::filesystem::path& exe, const std::vector<std::wstring>& program_files,
+                    const std::wstring& local_app_data) -> std::vector<std::wstring>;
+// For the current user; the agent's folders from agent_dirs_for(). Resolved (see resolve()).
 auto make_roots(const std::filesystem::path& exe) -> Roots;
 // For this program.
 auto make_roots() -> Roots;

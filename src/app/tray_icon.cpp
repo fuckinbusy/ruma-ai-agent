@@ -1,4 +1,5 @@
 #include "app/tray_icon.hpp"
+#include "core/product.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -19,7 +20,7 @@ using Bitmap = core::Handle<BitmapTraits>;
 auto tip(const sheet::ModelChoice& choice) -> std::wstring {
     const std::string_view level = sheet::thinking_name(choice.level);
     const std::string_view name = sheet::model_of(choice).short_name; // the catalog's ASCII
-    return std::wstring{L"WinAiAgent · "} + std::wstring{name.begin(), name.end()} + L" · " + std::wstring{level.begin(), level.end()};
+    return std::wstring{core::product::kNameW} + L" · " + std::wstring{name.begin(), name.end()} + L" · " + std::wstring{level.begin(), level.end()};
 }
 
 auto make(std::span<const std::uint8_t> rgba, int size) -> core::Result<Icon> {

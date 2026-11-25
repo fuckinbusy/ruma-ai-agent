@@ -7,7 +7,7 @@ set(WA_NOTICE_PORTS curl freetype harfbuzz md4c miniz nghttp2 zlib glad glaze st
 set(WA_NOTICES_FILE "${PROJECT_BINARY_DIR}/THIRD-PARTY-NOTICES.txt")
 
 set(wa_vcpkg_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
-set(wa_notices "Third-party software in WinAiAgent\n\nWinAiAgent includes the libraries below. Each section is that library's license as its authors\npublished it.\n")
+set(wa_notices "Third-party software in ${WA_PRODUCT}\n\n${WA_PRODUCT} includes the libraries below. Each section is that library's license as its authors\npublished it.\n")
 foreach(port IN LISTS WA_NOTICE_PORTS)
     set(copyright "${wa_vcpkg_root}/share/${port}/copyright")
     if(NOT EXISTS "${copyright}")

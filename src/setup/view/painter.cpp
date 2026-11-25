@@ -1,4 +1,5 @@
 #include "setup/view/painter.hpp"
+#include "core/product.hpp"
 
 #include "core/hash.hpp"
 #include "ui/theme.hpp"
@@ -203,7 +204,7 @@ void Painter::draw_window(const Box& p) {
 }
 
 void Painter::draw_top(const Box& p, Reaction& r) {
-    text(Face::Text, 12.5f, "WinAiAgent Setup", p.x + 18, ui_->centred_baseline(Face::Text, 12.5f, p.y, kTopBar), ::ui::th().text_3);
+    text(Face::Text, 12.5f, WA_PRODUCT_TEXT " Setup", p.x + 18, ui_->centred_baseline(Face::Text, 12.5f, p.y, kTopBar), ::ui::th().text_3);
     const Box close{p.x + p.w - 6 - 36, p.y + 7, 36, 30};
     const Box minimize{close.x - 36, p.y + 7, 36, 30};
     drag_ = {p.x, p.y, minimize.x - p.x, kTopBar};
@@ -326,7 +327,7 @@ void Painter::keys(std::string_view hotkey, float cx, float top, float height, b
 void Painter::draw_welcome(const State& s, const Box& p, Reaction& r) {
     const bool update = s.screen == Screen::Update;
     const float cx = p.x + p.w / 2;
-    centred(Face::Display, 32.0f, "WinAiAgent", cx, p.y + 384 + part(1), 37, ::ui::th().text);
+    centred(Face::Display, 32.0f, WA_PRODUCT_TEXT, cx, p.y + 384 + part(1), 37, ::ui::th().text);
     const auto sub = update ? std::format("Version {} is installed \xE2\x80\x94 this updates it to {}", s.installed_version, s.version)
                             : std::string{"An AI agent that lives at the top of your screen"};
     centred(Face::Text, 15.0f, sub, cx, p.y + 437 + part(2), 22.5f, ::ui::th().text_2);
@@ -461,7 +462,7 @@ void Painter::draw_working(const State& s, const Box& p, Reaction& r) {
     const float base = ui_->centred_baseline(Face::Display, 40.0f, p.y + 400, 40);
     text(Face::Display, 40.0f, pct, px, base, ::ui::th().text);
     text(Face::Display, 20.0f, "%", px + pw + 2, base, ::ui::th().text_3);
-    centred(Face::Text, 13.5f, removing ? std::string_view{"Removing WinAiAgent"} : step_doing(s.step), cx, p.y + 450, 20, ::ui::th().text_2);
+    centred(Face::Text, 13.5f, removing ? std::string_view{"Removing " WA_PRODUCT_TEXT} : step_doing(s.step), cx, p.y + 450, 20, ::ui::th().text_2);
 
     if (!removing) { // .steps: done ✓, now turning, next a dot
         constexpr std::pair<Step, std::string_view> steps[] = {{Step::Files, "Files"}, {Step::Shortcuts, "Shortcuts"}, {Step::Settings, "Settings"}};
@@ -579,7 +580,7 @@ void Painter::draw_message(const State& s, const Box& p, Reaction& r) {
     switch (s.screen) {
     case Screen::Installed:
         title = "Already installed";
-        sub = std::format("WinAiAgent {} is already installed on this computer", s.installed_version);
+        sub = std::format(WA_PRODUCT_TEXT " {} is already installed on this computer", s.installed_version);
         meta = narrow(s.installed_dir);
         break;
     case Screen::Failed:
@@ -588,7 +589,7 @@ void Painter::draw_message(const State& s, const Box& p, Reaction& r) {
         meta = s.uninstalling ? std::string{} : std::string{"Everything it had done was undone"};
         break;
     case Screen::Confirm:
-        title = "Remove WinAiAgent?";
+        title = "Remove " WA_PRODUCT_TEXT "?";
         sub = "The program, its settings, your history and the API key";
         meta = narrow(s.installed_dir);
         primary = "Remove";
@@ -597,7 +598,7 @@ void Painter::draw_message(const State& s, const Box& p, Reaction& r) {
         break;
     default: // Removed
         title = s.note.empty() ? std::string_view{"Removed"} : std::string_view{"Not everything was removed"};
-        sub = s.note.empty() ? std::string{"Nothing of WinAiAgent is left on this computer"} : s.note;
+        sub = s.note.empty() ? std::string{"Nothing of " WA_PRODUCT_TEXT " is left on this computer"} : s.note;
         meta = s.note.empty() ? std::string{} : std::string{"Run the uninstaller again to finish"};
         break;
     }

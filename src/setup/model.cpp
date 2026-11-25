@@ -1,4 +1,5 @@
 #include "setup/model.hpp"
+#include "core/product.hpp"
 
 #include <windows.h>
 
@@ -9,7 +10,7 @@
 namespace setup {
 namespace {
 
-constexpr std::wstring_view kProductFolder = L"WinAiAgent";
+constexpr std::wstring_view kProductFolder = core::product::kFolder;
 
 auto without_trailing_separators(std::filesystem::path p) -> std::filesystem::path {
     while (!p.has_filename() && p.has_relative_path())
@@ -65,6 +66,17 @@ auto holds_others(const std::filesystem::path& dir) -> bool {
     if (std::filesystem::exists(dir / L"install.json", ec))
         return false;
     return std::filesystem::directory_iterator{dir, ec} != std::filesystem::directory_iterator{};
+}
+
+auto update_dir(const std::filesystem::path& installed) -> std::filesystem::path {
+    const auto dir = without_trailing_separators(installed);
+    const auto name = dir.filename().native();
+    const auto old = core::product::kOldFolder;
+    if (CompareStringOrdinal(name.c_str(), static_cast<int>(name.size()), old.data(), static_cast<int>(old.size()), TRUE) !=
+        CSTR_EQUAL)
+        return dir;
+    const auto sibling = dir.parent_path() / kProductFolder;
+    return holds_others(sibling) ? dir : sibling; // someone's own folder of that name: the program stays put
 }
 
 auto check_folder(const std::filesystem::path& dir, std::uint64_t needed) -> FolderCheck {

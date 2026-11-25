@@ -1,5 +1,7 @@
 #include "core/win.hpp"
 
+#include "core/product.hpp"
+
 #include <objbase.h>
 #include <shlobj.h>
 
@@ -71,7 +73,7 @@ auto data_dir_for(const std::filesystem::path& exe, const std::filesystem::path&
                            CompareStringOrdinal(path.c_str(), static_cast<int>(folder.size()), folder.c_str(), static_cast<int>(folder.size()),
                                                 TRUE) == CSTR_EQUAL;
     if (installed) {
-        return local_app_data / L"WinAiAgent" / L"data";
+        return local_app_data / product::kFolder / L"data";
     }
     if (auto beside = data_dir_beside(exe)) {
         return *beside;
@@ -79,12 +81,30 @@ auto data_dir_for(const std::filesystem::path& exe, const std::filesystem::path&
     return local_app_data / L"Agent";
 }
 
+auto adopt_old_data(const std::filesystem::path& local_app_data) -> bool {
+    const auto old = local_app_data / product::kOldFolder;
+    const auto now = local_app_data / product::kFolder;
+    std::error_code ec;
+    if (std::filesystem::exists(old / L"install.json", ec)) {
+        return false; // a per-user install's own folder: its program is never the data (the installer moves its data)
+    }
+    if (!std::filesystem::is_directory(old, ec) || std::filesystem::exists(now, ec)) {
+        return false; // nothing to move, or the new one is there already: never over it
+    }
+    std::filesystem::rename(old, now, ec); // one volume: whole, at once (the key, the history, the memory)
+    return !ec;
+}
+
 auto agent_data_dir() -> std::filesystem::path {
     const auto local = known_folder(FOLDERID_LocalAppData);
     if (!local) {
         return data_dir_beside(module_path()).value_or(std::filesystem::temp_directory_path() / L"Agent");
     }
-    return data_dir_for(module_path(), known_folder(FOLDERID_ProgramFiles).value_or(std::filesystem::path{}), *local);
+    auto dir = data_dir_for(module_path(), known_folder(FOLDERID_ProgramFiles).value_or(std::filesystem::path{}), *local);
+    if (dir == *local / product::kFolder / L"data") {
+        (void)adopt_old_data(*local); // an installed agent from before the rename: its data comes with it
+    }
+    return dir;
 }
 
 void keep_mta() noexcept {

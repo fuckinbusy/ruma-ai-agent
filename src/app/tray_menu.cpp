@@ -1,4 +1,5 @@
 #include "app/tray_menu.hpp"
+#include "core/product.hpp"
 
 #include "app/model_choice.hpp"
 #include "ui/anim.hpp"
@@ -66,7 +67,7 @@ auto build(const config::Config& c, std::span<const settings::Item> items, bool 
         rows.push_back(std::move(r));
     };
     const auto choice = settings::choice_of(c.ai);
-    add({.kind = Kind::Header, .label = "WinAiAgent",
+    add({.kind = Kind::Header, .label = std::string{core::product::kName},
          .detail = std::format("{} \xC2\xB7 {}", sheet::model_of(choice).short_name, sheet::thinking_name(choice.level)),
          .state = paused ? "paused" : working ? "working" : "ready", .id = kOpenId, .model = std::max(0, sheet::model_index(choice.model))},
         kHeaderH);

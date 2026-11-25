@@ -70,7 +70,7 @@ private:
 // The card as a notification: a result's own buttons, a question's Review only, an alert none.
 auto note_of(const sheet::Drop& d) -> Note;
 // "drop:<task>:<action>".
-// The Start-menu shortcut that carries the app's id: the installer's "WinAiAgent.lnk" when the
+// The Start-menu shortcut that carries the app's id: the installer's "Ruma.lnk" when the
 // agent was installed (install.json beside agent.exe) — the agent then makes none of its own —
 // otherwise a build's "Agent.lnk".
 auto shortcut_name(const std::filesystem::path& exe_dir) -> std::wstring_view;

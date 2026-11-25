@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 4.0)
 
 project(WinAiAgent VERSION 0.0.1 LANGUAGES CXX)
+# The product's name, one place for all that is shown: the code (core/product.hpp through wa_version.h),
+# the files' version resources, the installer's file name, the notices. The project keeps its own name.
+set(WA_PRODUCT "Ruma")
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "WinAiAgent targets Windows with MSVC only")

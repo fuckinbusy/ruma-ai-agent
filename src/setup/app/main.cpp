@@ -1,4 +1,4 @@
-// WinAiAgentSetup-<version>.exe and uninstall.exe — one program (docs/specs/installer.md). With the
+// RumaSetup-<version>.exe and uninstall.exe — one program (docs/specs/installer.md). With the
 // package inside (resource PAYLOAD) it installs or updates; without it, it removes the folder it
 // lies in, going on from a copy of itself in %TEMP% (an exe can't delete itself while it runs).
 //   --no-gl: the plain Windows dialogs, as on a computer without OpenGL 4.5

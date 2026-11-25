@@ -1,6 +1,7 @@
 #include "tools/winsys_tools.hpp"
 
 #include "core/json.hpp"
+#include "core/product.hpp"
 #include "core/utf8.hpp"
 #include "security/paths.hpp"
 #include "tools/os.hpp"
@@ -187,7 +188,10 @@ auto find_app(const args::Uninstall& a, const security::Request* asked = nullptr
 }
 
 auto agent_itself(const App& app) -> bool {
-    if (lower(app.name) == "winaiagent") {
+    // By the name it is listed under (the installer writes the product's, core::product) or the one
+    // from before the rename; its uninstaller sits in Program Files, outside the agent's data folders.
+    const std::string name = lower(app.name);
+    if (name == lower(std::string{core::product::kName}) || name == "winaiagent") {
         return true;
     }
     const auto& roots = security::paths::system_roots();

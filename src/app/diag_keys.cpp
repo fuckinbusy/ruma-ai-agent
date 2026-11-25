@@ -2,6 +2,7 @@
 
 #include "app/fullscreen.hpp"
 
+#include "core/product.hpp"
 #include "core/utf8.hpp"
 
 #include <windows.h>
@@ -219,7 +220,7 @@ auto keys(double seconds, const std::filesystem::path& log, bool box) -> int {
     state.out.close();
     if (box) {
         const std::wstring text = L"Keys diagnostic done.\nThe log is at:\n" + log.wstring();
-        MessageBoxW(nullptr, text.c_str(), L"Agent", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(nullptr, text.c_str(), WA_PRODUCT_WIDE, MB_OK | MB_ICONINFORMATION);
     }
     return 0;
 }

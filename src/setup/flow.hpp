@@ -23,7 +23,7 @@ enum class Screen : std::uint8_t {
     Installed,  // the same or a newer version is there: nothing to do
     Update,     // an older version is there
     Failed,     // the work stopped on an error; everything was undone
-    Confirm,    // uninstall.exe: "Remove WinAiAgent?"
+    Confirm,    // uninstall.exe: "Remove Ruma?"
     Removing,
     Removed,
 };

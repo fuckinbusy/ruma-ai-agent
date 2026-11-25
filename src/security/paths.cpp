@@ -1,5 +1,6 @@
 #include "security/paths.hpp"
 
+#include "core/product.hpp"
 #include "core/win.hpp"
 
 #include <windows.h>
@@ -343,6 +344,29 @@ auto make_roots() -> Roots {
     return make_roots(core::win::module_path());
 }
 
+auto agent_dirs_for(const std::filesystem::path& exe, const std::vector<std::wstring>& program_files,
+                    const std::wstring& local_app_data) -> std::vector<std::wstring> {
+    std::vector<std::wstring> dirs;
+    const auto add = [&](std::wstring dir) {
+        if (std::ranges::find(dirs, dir) == dirs.end()) {
+            dirs.push_back(std::move(dir));
+        }
+    };
+    add(local_app_data + L"\\Agent");
+    if (auto beside = core::win::data_dir_beside(exe)) { // a portable build: its data beside it
+        add(beside->wstring());
+    }
+    const std::filesystem::path local{local_app_data};
+    const auto installed = local / core::product::kFolder / L"data";
+    for (const auto& pf : program_files) {
+        if (!pf.empty() && core::win::data_dir_for(exe, pf, local) == installed) {
+            add(installed.wstring());
+            add((local / core::product::kOldFolder).wstring()); // before the rename, until it is moved
+        }
+    }
+    return dirs;
+}
+
 auto make_roots(const std::filesystem::path& exe) -> Roots {
     Roots r;
     r.system_root = known(FOLDERID_Windows);
@@ -357,10 +381,7 @@ auto make_roots(const std::filesystem::path& exe) -> Roots {
     r.users = known(FOLDERID_UserProfiles);
     r.local_app_data = known(FOLDERID_LocalAppData);
     r.roaming_app_data = known(FOLDERID_RoamingAppData);
-    r.agent_dirs.push_back(r.local_app_data + L"\\Agent");
-    if (auto beside = core::win::data_dir_beside(exe)) { // a portable build: its data beside it
-        r.agent_dirs.push_back(beside->wstring());
-    }
+    r.agent_dirs = agent_dirs_for(exe, r.program_files, r.local_app_data);
     for (const wchar_t* dir : {L".ssh", L".gnupg", L".aws", L".azure", L".kube"}) {
         r.secret_dirs.push_back(r.profile + L"\\" + dir);
     }

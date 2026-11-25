@@ -27,7 +27,7 @@ struct IconTraits {
 };
 using Icon = core::Handle<IconTraits>;
 
-// L"WinAiAgent · Flash · Low".
+// L"Ruma · Flash · Low".
 [[nodiscard]] auto tip(const sheet::ModelChoice& choice) -> std::wstring;
 
 // An icon of a `size` x `size` straight-alpha RGBA frame (rows top to bottom).

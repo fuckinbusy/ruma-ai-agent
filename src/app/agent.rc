@@ -19,12 +19,12 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "WinAiAgent"
-            VALUE "FileDescription", "WinAiAgent"
+            VALUE "CompanyName", WA_PRODUCT_TEXT
+            VALUE "FileDescription", WA_PRODUCT_TEXT
             VALUE "FileVersion", WA_VERSION_TEXT
             VALUE "InternalName", "agent"
             VALUE "OriginalFilename", "agent.exe"
-            VALUE "ProductName", "WinAiAgent"
+            VALUE "ProductName", WA_PRODUCT_TEXT
             VALUE "ProductVersion", WA_VERSION_TEXT
         END
     END

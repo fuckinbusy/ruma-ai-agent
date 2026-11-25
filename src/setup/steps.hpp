@@ -50,7 +50,7 @@ struct Choices {
 };
 
 // The current user's Start menu programs folder, desktop, and the agent's own folder of theirs
-// (%LOCALAPPDATA%\WinAiAgent: its data in data\, apart from the program in Program Files); tests
+// (%LOCALAPPDATA%\Ruma: its data in data\, apart from the program in Program Files); tests
 // use folders of their own.
 struct Places {
     std::filesystem::path start_menu;
@@ -70,7 +70,8 @@ auto installed(System& sys) -> std::optional<Installed>;
 auto install(System& sys, const Places& places, const Choices& choices, std::span<const std::byte> zip,
              const Watch& watch, const std::stop_token& stop) -> core::Result<Journal>;
 
-// The program's files replaced in place; data, settings, shortcuts and autostart stay as they are.
+// The program's files replaced in place; data, settings, shortcuts and autostart stay as they are. An
+// install from before the rename moves to update_dir(dir), with the same shortcuts and autostart.
 auto update(System& sys, const Places& places, const std::filesystem::path& dir, std::span<const std::byte> zip,
             const Watch& watch, const std::stop_token& stop) -> core::Result<Journal>;
 

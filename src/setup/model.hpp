@@ -11,9 +11,14 @@
 
 namespace setup {
 
-// The folder the program goes to: `<chosen>\WinAiAgent`, or `chosen` itself when it is already
+// The folder the program goes to: `<chosen>\Ruma`, or `chosen` itself when it is already
 // called that (any case). A trailing separator is ignored.
 auto install_dir(const std::filesystem::path& chosen) -> std::filesystem::path;
+
+// Where an update puts the program installed in `installed`: an install from before the rename
+// (2026-11-25, a folder called WinAiAgent) moves to the sibling folder of the product's name, unless
+// that one holds someone else's files; any other folder stays where it is.
+auto update_dir(const std::filesystem::path& installed) -> std::filesystem::path;
 
 struct FolderCheck {
     bool writable = false;

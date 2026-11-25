@@ -1,4 +1,5 @@
 #include "setup/steps.hpp"
+#include "core/product.hpp"
 
 #include "core/agent_ids.hpp"
 #include "core/fs.hpp"
@@ -230,6 +231,19 @@ auto apply(System& sys, const Places& places, const Plan& plan, std::span<const 
     Undo undo;
     const auto cancelled = [&] { return core::make_error(core::Code::Cancelled, "cancelled"); };
 
+    // The data kept before the rename (2026-11-25), the agent closed now: moved whole, and back where the
+    // earlier agent looks for it on a failure (review C1); when it can't move, nothing goes on without it (I1).
+    if (!places.user_dir.empty() && places.user_dir.filename() == core::product::kFolder) {
+        const auto local = places.user_dir.parent_path();
+        const auto was = local / core::product::kOldFolder;
+        if (is_dir(was) && !on_disk(places.user_dir) && !on_disk(journal_path(was))) {
+            if (!core::win::adopt_old_data(local))
+                return core::make_error(core::Code::AccessDenied,
+                                        std::format("Close what is open in {}, then try again", narrow(was.native())));
+            undo.push([was, now = places.user_dir] { MoveFileExW(extended(now).c_str(), extended(was).c_str(), 0); });
+        }
+    }
+
     // Files: the folders, the old files moved aside, the package unpacked.
     report(watch, Step::Files);
     if (stop.stop_requested())
@@ -270,8 +284,11 @@ auto apply(System& sys, const Places& places, const Plan& plan, std::span<const 
     std::vector<std::filesystem::path> links{places.start_menu / core::agent_ids::kShortcut};
     const auto desktop = places.desktop / core::agent_ids::kShortcut;
     if (plan.old) {
-        const bool had = std::ranges::any_of(plan.old->shortcuts, [&](const auto& l) { return same_path(l, desktop); });
-        if (had && on_disk(desktop))
+        // Under its name from before the rename (2026-11-25) too: made again under the new one.
+        const auto had = [&](const std::filesystem::path& d) {
+            return on_disk(d) && std::ranges::any_of(plan.old->shortcuts, [&](const auto& l) { return same_path(l, d); });
+        };
+        if (had(desktop) || had(places.desktop / core::product::kOldShortcut))
             links.push_back(desktop);
     } else if (c.desktop) {
         links.push_back(desktop);
@@ -325,17 +342,24 @@ auto apply(System& sys, const Places& places, const Plan& plan, std::span<const 
     for (const auto& e : *entries)
         bytes += e.size;
     const bool had_entry = sys.key_exists(kUninstallKey);
-    const auto old_version = sys.get_value(kUninstallKey, L"DisplayVersion");
-    undo.push([&sys, had_entry, old_version] {
-        if (!had_entry)
+    // A kept entry's texts as they were: an update that moves the program changes where they point.
+    std::vector<std::pair<std::wstring, std::wstring>> was;
+    for (const std::wstring_view name :
+         {L"DisplayName", L"DisplayVersion", L"Publisher", L"DisplayIcon", L"InstallLocation", L"UninstallString"})
+        if (auto v = sys.get_value(kUninstallKey, name))
+            was.emplace_back(name, std::move(*v));
+    undo.push([&sys, had_entry, was] {
+        if (!had_entry) {
             (void)sys.delete_key(kUninstallKey);
-        else if (old_version)
-            (void)sys.set_value(kUninstallKey, L"DisplayVersion", *old_version);
+            return;
+        }
+        for (const auto& [name, value] : was)
+            (void)sys.set_value(kUninstallKey, name, value);
     });
     const std::pair<std::wstring_view, RegData> entry[] = {
-        {L"DisplayName", std::wstring{L"WinAiAgent"}},
+        {L"DisplayName", std::wstring{core::product::kNameW}},
         {L"DisplayVersion", wide(core::version())},
-        {L"Publisher", std::wstring{L"WinAiAgent"}},
+        {L"Publisher", std::wstring{core::product::kNameW}},
         {L"DisplayIcon", exe.native() + L",0"},
         {L"InstallLocation", dir.native()},
         {L"UninstallString", quoted(dir / L"uninstall.exe")},
@@ -373,6 +397,12 @@ auto apply(System& sys, const Places& places, const Plan& plan, std::span<const 
             if (!kept && inside(f, dir))
                 remove_file(f);
         }
+        for (const auto& l : plan.old->shortcuts) { // e.g. the name from before the rename, made anew
+            const bool made = std::ranges::any_of(j.shortcuts, [&](const auto& n) { return same_path(n, l); });
+            const bool placed = inside(l, places.start_menu) || inside(l, places.desktop);
+            if (const auto target = made || !placed ? std::nullopt : sys.shortcut_target(l); target && same_path(*target, exe))
+                remove_file(l);
+        }
     }
     return j;
 }
@@ -383,7 +413,7 @@ auto Places::for_user() -> Places {
     const auto local = core::win::known_folder(FOLDERID_LocalAppData);
     return {.start_menu = core::win::known_folder(FOLDERID_Programs).value_or(std::filesystem::path{}),
             .desktop = core::win::known_folder(FOLDERID_Desktop).value_or(std::filesystem::path{}),
-            .user_dir = local ? *local / L"WinAiAgent" : std::filesystem::path{}};
+            .user_dir = local ? *local / core::product::kFolder : std::filesystem::path{}};
 }
 
 auto installed(System& sys) -> std::optional<Installed> {
@@ -398,7 +428,7 @@ namespace {
 
 // The earlier install for the current user only (%LOCALAPPDATA%, HKCU's Apps entry): what it made of
 // the program goes once the new one is in; its data is the user's and stays — moved, when it lay elsewhere.
-void remove_earlier(System& sys, const Places& places, const std::filesystem::path& old) {
+void remove_earlier(System& sys, const Places& places, const std::filesystem::path& old, bool user_entry) {
     const auto journal = read_journal(old);
     const auto old_exe = old / L"agent.exe";
     if (journal) {
@@ -409,19 +439,44 @@ void remove_earlier(System& sys, const Places& places, const std::filesystem::pa
             if (const auto target = sys.shortcut_target(l); target && same_path(*target, old_exe))
                 remove_file(l);
     }
+    if (!journal) { // its files by the program's own names (as uninstall does), never anything else there
+        for (const auto& n : payload_names())
+            remove_file(old / wide(n));
+    }
     remove_file(journal_path(old));
     remove_file(old / L"uninstall.exe");
-    for (const auto& lnk : {places.start_menu / core::agent_ids::kShortcut, places.desktop / core::agent_ids::kShortcut})
-        if (const auto target = sys.shortcut_target(lnk); target && same_path(*target, old_exe))
-            remove_file(lnk);
+    for (const auto& place : {places.start_menu, places.desktop})
+        for (const auto name : {core::agent_ids::kShortcut, core::product::kOldShortcut})
+            if (const auto target = sys.shortcut_target(place / name); target && same_path(*target, old_exe))
+                remove_file(place / name);
     if (sys.get_value(kRunKey, kRunValue) == quoted(old_exe))
         (void)sys.delete_value(kRunKey, kRunValue); // the new install's autostart was not asked for
     (void)sys.delete_value(kGpuKey, old_exe.native());
     const std::wstring activator = L"Software\\Classes\\CLSID\\" + std::wstring{core::agent_ids::kActivatorClsid};
     if (sys.get_value(activator + L"\\LocalServer32", L"") == quoted(old_exe))
         (void)sys.delete_key(activator); // the agent writes its own again when it starts
-    (void)sys.delete_key(kUserUninstallKey);
+    if (user_entry)
+        (void)sys.delete_key(kUserUninstallKey);
     RemoveDirectoryW(extended(old).c_str()); // only when empty: its data, moved or not, is never removed here
+}
+
+// An install from before the rename (2026-11-25) in `from`: installed anew in `to` with the choices it
+// has (the desktop shortcut, autostart), then its program removed by its journal; a failure leaves it as it was.
+auto move_install(System& sys, const Places& places, const std::filesystem::path& from, const std::filesystem::path& to,
+                  std::span<const std::byte> zip, const Watch& watch, const std::stop_token& stop) -> core::Result<Journal> {
+    const auto old_exe = from / L"agent.exe";
+    const auto points_at_old = [&](const std::filesystem::path& lnk) {
+        const auto target = sys.shortcut_target(lnk);
+        return target && same_path(*target, old_exe);
+    };
+    Choices c{.dir = to};
+    c.autostart = sys.get_value(kRunKey, kRunValue) == quoted(old_exe);
+    c.desktop = points_at_old(places.desktop / core::product::kOldShortcut) ||
+                points_at_old(places.desktop / core::agent_ids::kShortcut);
+    auto done = apply(sys, places, Plan{.choices = c}, zip, watch, stop);
+    if (done)
+        remove_earlier(sys, places, from, false);
+    return done;
 }
 
 } // namespace
@@ -430,6 +485,9 @@ auto install(System& sys, const Places& places, const Choices& choices, std::spa
              const Watch& watch, const std::stop_token& stop) -> core::Result<Journal> {
     // The earlier per-user install (installer-program-files.md § 4): its data where the new agent keeps
     // it first (back on a failure), its program removed once the new one is in.
+    // The agent closes first: its data is moved below, while nothing of it may be open (review I2).
+    if (sys.agent_running() && !sys.ask_agent_to_exit())
+        return core::make_error(core::Code::AccessDenied, std::string{kAgentBusy});
     std::optional<std::filesystem::path> old;
     if (const auto at = sys.get_value(kUserUninstallKey, L"InstallLocation"); at && !at->empty() && !same_path(*at, choices.dir))
         old = std::filesystem::path{*at};
@@ -457,17 +515,20 @@ auto install(System& sys, const Places& places, const Choices& choices, std::spa
         return done;
     }
     if (old)
-        remove_earlier(sys, places, *old);
+        remove_earlier(sys, places, *old, true);
     return done;
 }
 
 auto update(System& sys, const Places& places, const std::filesystem::path& dir, std::span<const std::byte> zip,
             const Watch& watch, const std::stop_token& stop) -> core::Result<Journal> {
+    if (const auto to = update_dir(dir); !same_path(to, dir))
+        return move_install(sys, places, dir, to, zip, watch, stop);
     Plan plan{.choices = {.dir = dir}, .old = read_journal(dir), .update = true};
     if (!plan.old) { // no journal: what an install would have made, judged by what is there
         Journal guess;
         guess.root = dir;
         guess.shortcuts.push_back(places.start_menu / core::agent_ids::kShortcut);
+        guess.shortcuts.push_back(places.start_menu / core::product::kOldShortcut);
         if (sys.get_value(kRunKey, kRunValue) == quoted(dir / L"agent.exe"))
             guess.values.push_back({std::wstring{kRunKey}, std::wstring{kRunValue}});
         plan.old = std::move(guess);
@@ -487,7 +548,7 @@ auto uninstall(System& sys, const Places& places, const std::filesystem::path& d
     const auto journal = read_journal(dir);
     const bool listed = same_path(std::filesystem::path{sys.get_value(kUninstallKey, L"InstallLocation").value_or(L"")}, dir);
     if (!installed_here(sys, dir))
-        return core::make_error(core::Code::NotFound, std::format("WinAiAgent isn't installed in {}", narrow(dir.native())));
+        return core::make_error(core::Code::NotFound, std::format("{} isn't installed in {}", core::product::kName, narrow(dir.native())));
     if (sys.agent_running() && !sys.ask_agent_to_exit())
         return core::make_error(core::Code::AccessDenied, std::string{kAgentBusy});
     const auto exe = dir / L"agent.exe";
@@ -514,6 +575,7 @@ auto uninstall(System& sys, const Places& places, const std::filesystem::path& d
                 links.push_back(l);
     }
     for (const auto& candidate : {places.start_menu / core::agent_ids::kShortcut, places.desktop / core::agent_ids::kShortcut,
+                                  places.start_menu / core::product::kOldShortcut, places.desktop / core::product::kOldShortcut,
                                   places.start_menu / core::agent_ids::kBuildShortcut}) {
         const bool known = std::ranges::any_of(links, [&](const auto& l) { return same_path(l, candidate); });
         const auto target = sys.shortcut_target(candidate);
@@ -586,7 +648,8 @@ auto uninstall(System& sys, const Places& places, const std::filesystem::path& d
         RemoveDirectoryW(extended(d).c_str());
     RemoveDirectoryW(extended(dir).c_str());
     if (data_ours) {
-        RemoveDirectoryW(extended(places.user_dir).c_str()); // %LOCALAPPDATA%\WinAiAgent, when nothing else is in it
+        RemoveDirectoryW(extended(places.user_dir).c_str()); // %LOCALAPPDATA%\Ruma, when nothing else is in it
+        RemoveDirectoryW(extended(places.user_dir.parent_path() / core::product::kOldFolder).c_str()); // and an empty one from before the rename
     }
     tick();
     if (listed) // the Apps entry, when it is this folder's

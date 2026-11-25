@@ -83,7 +83,7 @@ auto installed() -> bool {
     return shortcut_name(std::filesystem::path{exe_path()}.parent_path()) == core::agent_ids::kShortcut;
 }
 
-// %APPDATA%\Microsoft\Windows\Start Menu\Programs\Agent.lnk (WinAiAgent.lnk when installed)
+// %APPDATA%\Microsoft\Windows\Start Menu\Programs\Agent.lnk (Ruma.lnk when installed)
 auto shortcut_path() -> std::wstring {
     wchar_t programs[MAX_PATH]{};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PROGRAMS, nullptr, SHGFP_TYPE_CURRENT, programs))) {

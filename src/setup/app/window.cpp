@@ -1,4 +1,5 @@
 #include "setup/app/window.hpp"
+#include "core/product.hpp"
 
 #include "core/agent_ids.hpp"
 #include "core/fs.hpp"
@@ -197,7 +198,7 @@ auto Runner::start() -> bool {
     const RECT& work = mi.rcWork;
     const int x = work.left + (work.right - work.left - w) / 2;
     const int y = work.top + std::max<int>(0, (work.bottom - work.top - h) / 2);
-    const std::wstring title = host_.uninstall ? L"Remove WinAiAgent" : L"WinAiAgent Setup";
+    const std::wstring title = host_.uninstall ? L"Remove " WA_PRODUCT_WIDE : WA_PRODUCT_WIDE L" Setup";
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, main_class.c_str(), title.c_str(), WS_POPUP | WS_MINIMIZEBOX | WS_SYSMENU,
                                 x, y, w, h, nullptr, nullptr, instance_, this);
     if (hwnd == nullptr)
@@ -271,7 +272,7 @@ void Runner::init_state() {
         }
         if (!installed_here(system_, host_.app_dir)) { // a build's folder, not an installed program's
             state_.screen = Screen::Failed;
-            state_.note = std::format("WinAiAgent isn't installed in {}",
+            state_.note = std::format(WA_PRODUCT_TEXT " isn't installed in {}",
                                       core::utf8::to_utf8(host_.app_dir.native()).value_or(std::string{"this folder"}));
         }
         return;
@@ -288,7 +289,7 @@ void Runner::init_state() {
     const auto relation = relate(there ? std::optional<std::string_view>{there->version} : std::nullopt, state_.version);
     state_.screen = first_screen(relation, false);
     if (state_.screen == Screen::Update)
-        state_.choices.dir = there->dir;
+        state_.choices.dir = update_dir(there->dir); // where it will be: moved out of a folder from before the rename
     // Raised by another account (a standard user typed an administrator's password): the Start menu,
     // autostart and data would be that account's, not the user's (installer-program-files.md).
     if (!host_.smoke && self::elevated_by_another_account()) {
@@ -483,7 +484,8 @@ void Runner::act(Command c) {
         work_at_ = seconds();
         const auto choices = state_.choices;
         const auto app_dir = host_.app_dir;
-        worker_ = std::jthread{[this, c, choices, app_dir](std::stop_token stop) {
+        const auto from = state_.installed_dir;
+        worker_ = std::jthread{[this, c, choices, app_dir, from](std::stop_token stop) {
             const Watch watch{.progress = [this](std::uint64_t d, std::uint64_t t) {
                                   std::scoped_lock lock{shared_.mutex};
                                   shared_.done = d;
@@ -498,7 +500,7 @@ void Runner::act(Command c) {
                 auto r = install(system_, places_, choices, host_.payload, watch, stop);
                 result = r ? core::Result<void>{} : std::unexpected{r.error()};
             } else if (c == Command::Update) {
-                auto r = update(system_, places_, choices.dir, host_.payload, watch, stop);
+                auto r = update(system_, places_, from, host_.payload, watch, stop);
                 result = r ? core::Result<void>{} : std::unexpected{r.error()};
             } else {
                 result = uninstall(system_, places_, app_dir, watch.progress);
@@ -694,32 +696,32 @@ auto run(const Host& host) -> int {
 
 auto run_plain(const Host& host) -> int {
     if (!host.uninstall) {
-        TaskDialog(nullptr, nullptr, L"WinAiAgent Setup", L"WinAiAgent needs a graphics card with OpenGL 4.5",
+        TaskDialog(nullptr, nullptr, WA_PRODUCT_WIDE L" Setup", WA_PRODUCT_WIDE L" needs a graphics card with OpenGL 4.5",
                    L"This computer's graphics driver doesn't offer it, so the agent can't draw its window here.",
                    TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
         return 1;
     }
     auto system = RegistrySystem::for_user();
     if (!installed_here(system, host.app_dir)) {
-        const std::wstring text = L"WinAiAgent isn't installed in " + host.app_dir.native() + L".";
-        TaskDialog(nullptr, nullptr, L"Remove WinAiAgent", L"Nothing was removed", text.c_str(), TDCBF_CLOSE_BUTTON,
+        const std::wstring text = WA_PRODUCT_WIDE L" isn't installed in " + host.app_dir.native() + L".";
+        TaskDialog(nullptr, nullptr, L"Remove " WA_PRODUCT_WIDE, L"Nothing was removed", text.c_str(), TDCBF_CLOSE_BUTTON,
                    TD_INFORMATION_ICON, nullptr);
         return 1;
     }
     int button = 0;
     const std::wstring what = L"The program in " + host.app_dir.native() + L", its settings, your history and the API key.";
-    TaskDialog(nullptr, nullptr, L"Remove WinAiAgent", L"Remove WinAiAgent?", what.c_str(), TDCBF_YES_BUTTON | TDCBF_NO_BUTTON,
+    TaskDialog(nullptr, nullptr, L"Remove " WA_PRODUCT_WIDE, L"Remove " WA_PRODUCT_WIDE L"?", what.c_str(), TDCBF_YES_BUTTON | TDCBF_NO_BUTTON,
                TD_WARNING_ICON, &button);
     if (button != IDYES)
         return 0;
     const auto r = uninstall(system, Places::for_user(), host.app_dir, {});
     if (r) {
-        TaskDialog(nullptr, nullptr, L"Remove WinAiAgent", L"Removed",
-                   L"Nothing of WinAiAgent is left on this computer.", TDCBF_CLOSE_BUTTON, TD_INFORMATION_ICON, nullptr);
+        TaskDialog(nullptr, nullptr, L"Remove " WA_PRODUCT_WIDE, L"Removed",
+                   L"Nothing of " WA_PRODUCT_WIDE L" is left on this computer.", TDCBF_CLOSE_BUTTON, TD_INFORMATION_ICON, nullptr);
         return 0;
     }
     const auto why = wide(r.error().message);
-    TaskDialog(nullptr, nullptr, L"Remove WinAiAgent", L"Not everything was removed", why.c_str(), TDCBF_CLOSE_BUTTON,
+    TaskDialog(nullptr, nullptr, L"Remove " WA_PRODUCT_WIDE, L"Not everything was removed", why.c_str(), TDCBF_CLOSE_BUTTON,
                TD_ERROR_ICON, nullptr);
     return 1;
 }

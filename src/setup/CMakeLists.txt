@@ -72,7 +72,7 @@ function(wa_setup_exe target name description payload_rc)
     wa_target_defaults(${target})
 endfunction()
 
-wa_setup_exe(uninstaller uninstall "Remove WinAiAgent" "")
+wa_setup_exe(uninstaller uninstall "Remove ${WA_PRODUCT}" "")
 if(WA_BUILD_TESTS)
     # The installer's whole way in windows never shown: its DLLs unpacked and delay-loaded, the GL
     # window, the appearance, a screen, the launch (no agent started), its temporary folder removed.
@@ -101,7 +101,7 @@ add_custom_command(OUTPUT ${WA_PAYLOAD_ZIP}
     VERBATIM)
 add_custom_target(payload DEPENDS ${WA_PAYLOAD_ZIP})
 
-wa_setup_exe(installer WinAiAgentSetup-${PROJECT_VERSION} "WinAiAgent Setup" "PAYLOAD RCDATA \"${WA_PAYLOAD_ZIP}\"")
+wa_setup_exe(installer ${WA_PRODUCT}Setup-${PROJECT_VERSION} "${WA_PRODUCT} Setup" "PAYLOAD RCDATA \"${WA_PAYLOAD_ZIP}\"")
 add_dependencies(installer payload)
 set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/installer.rc PROPERTIES OBJECT_DEPENDS ${WA_PAYLOAD_ZIP})
 set(WA_INSTALLER_EXE $<TARGET_FILE:installer> PARENT_SCOPE)
