@@ -46,6 +46,8 @@ struct Settings {
     std::string model{ai::catalog::default_model().id}; // a model's id in ai::catalog
     ai::Thinking thinking = ai::Thinking::Low;
     double budget_usd = 0.10;           // a task's spending before "go on?"
+    ai::routing::Roles roles = ai::routing::default_roles(); // stage 4c: config.json's ai.roles
+    std::vector<std::string> disabled; // stage 4d-2: ai.disabled — the roles' chains pass them over
     std::filesystem::path secrets;      // the DPAPI key file (security::load_key)
     std::string proxy = "system";       // config.json's network.proxy
     // A new request continues the last task's conversation if that one ended this recently.

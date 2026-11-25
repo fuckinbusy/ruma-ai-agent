@@ -404,6 +404,8 @@ public:
     // The shortcut that opens the sheet, as the capsule says it (the one actually registered).
     void set_shortcut(std::string_view keys) { shortcut_.assign(keys); }
     void set_rest_motion(bool on) noexcept { rest_motion_on_ = on; }
+    // Stage 4d-2: the agent paused (the tray's Pause agent): its hidden sign fades to a third.
+    void set_paused(bool on) noexcept { paused_ = on; }
     // The resting strip's drifting light is gone with the strip (UI update, stage 3): the handle
     // stands still, so the shell's resting tick never has a frame due. (The setting and these
     // two go in the stage's task 7.)
@@ -475,6 +477,26 @@ private:
     // "Looked at" over the answer (phase 13a § 2, design/ui_system 03a-03c): the window read, a
     // picture of it, or a sensitive one's lock and why; its height.
     auto draw_looked(Model& m, float x, float y0, float w, bool measure) -> float;
+    // Stage 4c (sheet_route.cpp, screens 05 and 06): the blue notes of where the turn went instead,
+    // over its answer; the divider of a model the user changed to; a provider's failure as its card
+    // with the turn's buttons in it. Each returns its height.
+    auto draw_routes(std::span<const std::string> routes, float x, float y0, float w, bool measure) -> float;
+    auto draw_switched(std::string_view name, float x, float y0, float w, bool measure) -> float;
+    // Stage 4d-1 (sheet_settings.cpp): the settings mode — the header, the sections' column, a section;
+    // its shape: 1240 wide, as tall as the section (measured as it is drawn), never past the room.
+    void draw_settings(Model& m, const ui::layout::Box& panel, Reaction& r);
+    // Stage 4d-2 (sheet_settings_models.cpp): Models — the provider's card, its key's field and models,
+    // the month's spending; Roles — the three roles and their models. Each returns its height.
+    auto draw_models_section(Model& m, float x, float y0, float w, Reaction& r) -> float;
+    auto draw_roles_section(Model& m, float x, float y0, float w, Reaction& r) -> float;
+    bool paused_ = false; // stage 4d-2: the sign at a third
+    std::array<ui::layout::Box, 3> settings_role_boxes_{}; // Roles' model boxes: the menu opens under the one asked
+    [[nodiscard]] auto settings_shape(const Model& m) const -> Shape;
+    float settings_content_ = 0;        // the section's height under the header, as last drawn
+    Section settings_shown_ = Section::General; // the section drawn last: a change brings the new one in
+    int settings_open_item_ = -1;       // the item whose list is open (a dropdown), -1: none
+    ui::work::Scroll settings_scroll_;  // the section's own scroll: the header and the column stay
+    auto draw_failure_card(Model& m, float x, float y0, float w, bool measure, Reaction& r) -> float;
     // The files the turn made (phase 10, screen 24): a card each; their Preview in the panel, the
     // document on a white page (the answer's Markdown drawn with paper_ ink).
     auto draw_created(Model& m, float x, float y0, float w, bool measure, Reaction& r) -> float;
@@ -1008,7 +1030,9 @@ private:
     std::size_t field_most_ = kFieldLines; // its lines before it scrolls: kEditorLines in the editor
     std::uint64_t question_open_ = 0; // the task whose long question is shown whole (Show more)
     std::string_view question_link_;
-    std::string_view key_line_; // a literal, or the model's key_error (lives while the model does)
+    std::string_view key_line_; // one of key_texts_, or the model's key_error (lives while the model does)
+    // The key's row, said with the provider's name from the catalog: made at the first key row, kept.
+    std::array<std::string, 3> key_texts_;
     [[nodiscard]] auto editor_open(const Model& m) const -> bool;
     // The long paste's notice under the row (screen 31), and its chip's card under the mouse.
     [[nodiscard]] auto notice_open(const Model& m) const -> bool;

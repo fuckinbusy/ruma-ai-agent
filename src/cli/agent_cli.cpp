@@ -198,9 +198,9 @@ auto request(const Options& o) -> int {
         say("No such model: " + o.model);
         return 2;
     }
-    const auto others = ai::catalog::beside(*s.model); // as the app: a picture to a model that sees, the summary to the cheapest
-    s.vision_model = others.vision;
-    s.summary_model = others.summary;
+    // As the app with its default roles: a picture to a model that sees, the summary to the cheapest.
+    s.chains = ai::routing::chains(ai::routing::default_roles(), *s.model);
+    s.summary_model = ai::catalog::beside(*s.model).summary;
     s.thinking = o.thinking;
     s.limits.budget_usd = o.budget;
     s.now = [] { return std::chrono::system_clock::now(); };

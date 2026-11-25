@@ -653,7 +653,8 @@ void Painter::draw_set_body(Model& m, const events::DataSet& shown, const Box& b
 
     // Rules and memory: Private windows' own field (phase 13a § 2.1, 04 #5) — an app, a window title
     // or a site, typed, Add; the rule goes to the agent, the shell shows the list again.
-    if (set->kind == events::SetKind::Memory) {
+    // Its field goes with the private windows: Privacy's own list, or the old one that holds both.
+    if (set->kind == events::SetKind::Private || (set->kind == events::SetKind::Memory && set->rows.group_titles.size() > 1)) {
         const float fh = 34;
         static constexpr std::array<std::string_view, 3> kKinds{"App", "Title", "Site"};
         float kinds_w = 4;
@@ -850,7 +851,7 @@ void Painter::draw_set_body(Model& m, const events::DataSet& shown, const Box& b
             return; // the set was made again: nothing more of it this frame
         }
         // Rules and memory (phase 12 § 6): Open the rules, Forget an entry, Forget all (the shell asks).
-        if (e.action_row >= 0 && !r.command && set->kind == events::SetKind::Memory) {
+        if (e.action_row >= 0 && !r.command && (set->kind == events::SetKind::Memory || set->kind == events::SetKind::Private)) {
             const auto row = static_cast<std::size_t>(e.action_row);
             const double which = set->rows.at(row, set->rows.columns - 1).number;
             if (which == 0) {

@@ -24,26 +24,20 @@ constexpr float kStepsH = 54.0f;
 constexpr float kStepGap = 6.0f;
 constexpr float kRowH = 36.0f;
 constexpr float kValueH = 30.0f;
-constexpr float kSubH = 32.0f;
-// The settings' rows folded on a small screen (the frame rate's row, motion rework, then the theme's,
-// UI update stage 1, each made the list one row longer than 1366 x 768 at 125 % holds). 26 px still
-// holds a 12.5 px line with its padding.
-constexpr float kSubFoldedH = 26.0f;
+constexpr float kThemeH = 34.0f; // the theme's choices (stage 4d-1): a line of three, the tray's item height
 constexpr float kSepH = 9.0f;
 
 // The items' icons (Segoe Fluent Icons / MDL2 Assets, as the rest of the agent's).
-constexpr char32_t kIconKey = 0xE8D7;      // Permissions: a key
-constexpr char32_t kIconHistory = 0xE81C;  // History
 constexpr char32_t kIconSettings = 0xE713; // Setting
 constexpr char32_t kIconOpen = 0xE8A7;     // OpenInNewWindow
 constexpr char32_t kIconBug = 0xEBE8;      // Bug
 constexpr char32_t kIconPower = 0xE7E8;    // PowerButton
+constexpr char32_t kIconPause = 0xE769;    // Pause (stage 4d-2)
+constexpr char32_t kIconResume = 0xE768;   // Play
 
 constexpr std::string_view kModel = "Model";
 constexpr std::string_view kThinking = "Thinking";
 constexpr std::string_view kBudget = "Budget per task";
-constexpr std::string_view kApiKey = "DeepSeek API key\xE2\x80\xA6";
-constexpr std::string_view kChangeLog = "Change log\xE2\x80\xA6";
 
 auto find(std::span<const settings::Item> items, std::string_view label) -> const settings::Item* {
     const auto it = std::ranges::find_if(items, [&](const settings::Item& i) { return i.label == label; });
@@ -55,15 +49,6 @@ auto checked_child(const settings::Item& item) -> const settings::Item* {
     return it == item.children.end() ? nullptr : &*it;
 }
 
-// A list's next value after the checked one (the first after the last): a click steps through it.
-auto next_child_id(const settings::Item& item) -> unsigned {
-    if (item.children.empty()) {
-        return 0;
-    }
-    const auto it = std::ranges::find_if(item.children, [](const settings::Item& i) { return i.checked; });
-    const auto next = it == item.children.end() || std::next(it) == item.children.end() ? item.children.begin() : std::next(it);
-    return next->id;
-}
 
 } // namespace
 
@@ -71,7 +56,7 @@ namespace {
 
 // `fold`: without the Model and Thinking sections (layout(): a list open on a small screen).
 auto build(const config::Config& c, std::span<const settings::Item> items, bool working, bool settings_open, bool budget_open,
-           bool debug, bool fold) -> std::vector<Row> {
+           bool debug, bool fold, bool paused) -> std::vector<Row> {
     std::vector<Row> rows;
     float y = kPad;
     const float w = kWidth - 2 * kPad;
@@ -83,18 +68,21 @@ auto build(const config::Config& c, std::span<const settings::Item> items, bool 
     const auto choice = settings::choice_of(c.ai);
     add({.kind = Kind::Header, .label = "WinAiAgent",
          .detail = std::format("{} \xC2\xB7 {}", sheet::model_of(choice).short_name, sheet::thinking_name(choice.level)),
-         .state = working ? "working" : "ready", .id = kOpenId, .model = std::max(0, sheet::model_index(choice.model))},
+         .state = paused ? "paused" : working ? "working" : "ready", .id = kOpenId, .model = std::max(0, sheet::model_index(choice.model))},
         kHeaderH);
 
     if (!fold) {
         add({.kind = Kind::Section, .label = "MODEL"}, kSectionH);
         if (const auto* model = find(items, kModel)) {
             const auto all = ai::catalog::models();
-            for (std::size_t i = 0; i < model->children.size() && i < all.size(); ++i) { // settings lists them in the catalog's order
-                const auto& m = model->children[i];
+            for (const auto& m : model->children) { // a model switched off is not listed (4d-2): each found by its name
+                const auto it = std::ranges::find(all, std::string_view{m.label}, &ai::catalog::Model::full_name);
+                if (it == all.end()) {
+                    continue;
+                }
                 add({.kind = Kind::Model, .label = m.label,
-                     .detail = all[i].vision == ai::catalog::Tri::Yes ? "Sees pictures" : "No pictures", .id = m.id,
-                     .checked = m.checked, .model = static_cast<int>(i)},
+                     .detail = it->vision == ai::catalog::Tri::Yes ? "Sees pictures" : "No pictures", .id = m.id,
+                     .checked = m.checked, .model = static_cast<int>(it - all.begin())},
                     kModelH);
             }
         }
@@ -112,52 +100,32 @@ auto build(const config::Config& c, std::span<const settings::Item> items, bool 
             }
             y += kStepsH + 6;
         }
+
+        // Stage 4d-1 (SETTINGS_SPEC § 5: Theme): its three choices on a line, as the thinking steps.
+        add({.kind = Kind::Section, .label = "THEME"}, kSectionH);
+        if (const auto* theme = find(items, "Theme")) {
+            const auto n = static_cast<float>(theme->children.size());
+            const float step_w = (w - kStepGap * (n - 1)) / n;
+            for (std::size_t i = 0; i < theme->children.size(); ++i) {
+                const auto& t = theme->children[i];
+                Row r{.kind = Kind::Theme, .label = t.label, .id = t.id, .checked = t.checked};
+                r.box = {kPad + static_cast<float>(i) * (step_w + kStepGap), y, step_w, kThemeH};
+                rows.push_back(std::move(r));
+            }
+            y += kThemeH + 6;
+        }
     }
 
-    if (const auto* budget = find(items, kBudget)) {
-        const auto* on = checked_child(*budget);
-        add({.kind = Kind::Budget, .label = std::string{kBudget}, .detail = on ? on->label : std::format("${:.2f}", c.ai.budget_usd), .open = budget_open,
-             .turn = budget_open ? 1.0f : 0.0f},
-            kRowH);
-        if (budget_open) {
-            for (const auto& b : budget->children) {
-                add({.kind = Kind::BudgetValue, .label = b.label, .id = b.id, .checked = b.checked, .in = Row::In::Budget}, kValueH);
-            }
-        }
-    }
-    for (const auto label : {kApiKey, kChangeLog}) {
-        if (const auto* item = find(items, label)) {
-            add({.kind = Kind::Item, .label = item->label, .id = item->id, .icon = label == kApiKey ? kIconKey : kIconHistory}, kRowH);
-        }
-    }
-    add({.kind = Kind::Settings, .label = "Settings", .open = settings_open, .icon = kIconSettings, .turn = settings_open ? 1.0f : 0.0f}, kRowH);
-    if (settings_open) { // the rest of the settings: a list's value stepped by a click, a switch flipped
-        for (const auto& item : items) {
-            const std::string_view l = item.label;
-            if (item.separator || l == kModel || l == kThinking || l == kBudget || l == kApiKey || l == kChangeLog) {
-                continue;
-            }
-            Row r{.kind = Kind::SettingsItem, .label = item.label, .in = Row::In::Settings};
-            if (!item.children.empty()) {
-                const auto* on = checked_child(item);
-                r.detail = on ? on->label : std::string{};
-                r.id = next_child_id(item);
-            } else {
-                r.id = item.id;
-                r.checked = item.checked;
-                if (!l.ends_with("\xE2\x80\xA6")) { // an action ("Audit log…") has no state
-                    r.detail = item.checked ? "On" : "Off";
-                }
-            }
-            add(std::move(r), fold ? kSubFoldedH : kSubH);
-        }
-    }
+    (void)budget_open; // stage 4d-2: the budget per task is Roles' (SETTINGS_SPEC § 5 has none in the tray)
+    (void)settings_open; // stage 4d-1: the settings are the window's own mode, no list of them here
     add({.kind = Kind::Separator}, kSepH);
     // The shortcut that works: the settings' checked one (the fallback when the one set was taken).
     const auto* shortcut = find(items, "Keyboard shortcut");
     const auto* works = shortcut != nullptr ? checked_child(*shortcut) : nullptr;
-    add({.kind = Kind::Item, .label = "Open agent", .detail = works != nullptr ? works->label : c.hotkey, .id = kOpenId, .icon = kIconOpen},
+    add({.kind = Kind::Item, .label = "Show agent", .detail = works != nullptr ? works->label : c.hotkey, .id = kOpenId, .icon = kIconOpen},
         kRowH);
+    add({.kind = Kind::Item, .label = paused ? "Resume agent" : "Pause agent", .id = kPauseId, .icon = paused ? kIconResume : kIconPause}, kRowH);
+    add({.kind = Kind::Item, .label = "Settings\xE2\x80\xA6", .detail = "Ctrl ,", .id = settings::kSettingsId, .icon = kIconSettings}, kRowH);
     if (debug && !fold) { // folded on a small screen: F12 opens it all the same (phase 12: room for Rules and memory)
         add({.kind = Kind::Item, .label = "Debug window (F12)", .id = kDebugId, .icon = kIconBug}, kRowH);
     }
@@ -171,16 +139,14 @@ auto build(const config::Config& c, std::span<const settings::Item> items, bool 
 } // namespace
 
 auto layout(const config::Config& c, std::span<const settings::Item> items, bool working, bool settings_open, bool budget_open,
-            bool debug, float room) -> std::vector<Row> {
-    auto rows = build(c, items, working, settings_open, budget_open, debug, false);
-    if (height(rows) <= room || (!settings_open && !budget_open)) {
+            bool debug, float room, bool paused) -> std::vector<Row> {
+    // Stage 4d-1: no list of the settings any more; a menu taller than the room folds its sections
+    // (the header still says the choice).
+    auto rows = build(c, items, working, settings_open, budget_open, debug, false, paused);
+    if (height(rows) <= room) {
         return rows;
     }
-    rows = build(c, items, working, settings_open, budget_open, debug, true);
-    if (height(rows) <= room || !settings_open || !budget_open) {
-        return rows;
-    }
-    return build(c, items, working, true, false, debug, true); // the settings' list asked last: it stays
+    return build(c, items, working, settings_open, budget_open, debug, true, paused);
 }
 
 void Unfold::step(double now) noexcept {
@@ -311,8 +277,8 @@ auto step(const std::vector<Row>& rows, std::optional<std::size_t> from, int dir
             continue;
         }
         if (count > 0 && std::abs(rows[lines[count - 1]].box.y - rows[i].box.y) < 0.5f) {
-            if (rows[i].kind == Kind::Thinking && rows[i].checked) {
-                lines[count - 1] = i; // the thinking line: the one chosen
+            if ((rows[i].kind == Kind::Thinking || rows[i].kind == Kind::Theme) && rows[i].checked) {
+                lines[count - 1] = i; // the thinking line, the theme's: the one chosen
             }
             continue;
         }
@@ -479,6 +445,15 @@ void draw(ui::Ui& ui, const std::vector<Row>& rows, std::optional<std::size_t> h
             const float lw = work::text_width(ui, Face::Semibold, 12.5f, row.label);
             work::caption(ui, {b.x + (b.w - lw) / 2, b.y + 26, lw + 1, 18}, Face::Semibold, 12.5f, row.label,
                         row.checked ? ui::th().text : ui::th().text_2);
+            break;
+        }
+        case Kind::Theme: { // a choice on its line (stage 4d-1), as a thinking step without its drops
+            r.rect({b.x, b.y, b.w, b.h}, {.fill = row.checked ? ui::th().accent_soft : hot ? ui::th().w2 : ui::th().w1,
+                                          .radius = {10, 10, 10, 10}, .border = row.checked ? ui::th().accent_line : ui::th().line,
+                                          .border_width = row.checked ? 1.3f : 1.0f});
+            const float lw = work::text_width(ui, Face::Semibold, 12.5f, row.label);
+            work::caption(ui, {b.x + (b.w - lw) / 2, b.y, lw + 1, b.h}, Face::Semibold, 12.5f, row.label,
+                          row.checked ? ui::th().text : ui::th().text_2);
             break;
         }
         case Kind::Budget:

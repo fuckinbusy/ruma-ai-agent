@@ -8,6 +8,7 @@
 
 #include "ai/catalog.hpp"
 #include "ai/provider.hpp"
+#include "ai/routing.hpp"
 #include "ai/types.hpp"
 #include "core/error.hpp"
 
@@ -44,6 +45,17 @@ enum class Ask : std::uint8_t { Budget, Turns, Repeat };
 // What the model is told when the user presses "Answer now" (phase 12 § 9).
 inline constexpr std::string_view kAnswerNow = "Answer now from what you have; no more tools.";
 
+// Stage 4c: where a turn went instead of the chosen model, and why. `from` is the model it would
+// have gone to (the chosen one, or the one that failed); `words_only`: no model of the chain sees
+// pictures, so `to` got their names only.
+struct Route {
+    const catalog::Model* to = nullptr;
+    const catalog::Model* from = nullptr;
+    routing::Why why = routing::Why::Role;
+    routing::Need need = routing::Need::Chat;
+    bool words_only = false;
+};
+
 // Called on the caller's thread.
 struct Events {
     std::function<void()> on_turn; // a turn begins (before its request goes out)
@@ -52,8 +64,8 @@ struct Events {
     std::function<void(const ToolCall&, const Result&)> on_tool_finished;
     std::function<void(const Usage&, double usd_total)> on_usage; // after each turn
     std::function<bool(Ask, double usd_total)> ask_continue;       // waits for the user; false: stop
-    // A request with a picture went to this model: the chosen one does not see pictures.
-    std::function<void(const catalog::Model&)> on_vision_model;
+    // A turn went to another model than the one chosen, or its pictures went as words (Route).
+    std::function<void(const Route&)> on_routed;
     std::function<void(std::string_view what)> on_repeat; // the model was told it repeats itself
     // Phase 12 § 10: the last turn's prompt as a percent of Limits::history_tokens, after each
     // turn; the old part of the history summarized.
@@ -63,18 +75,23 @@ struct Events {
 
 struct Setup {
     Provider provider;
+    // The provider of a model's turns (stage 4c), with its own key; an error (kind "no_key"): none
+    // here, the chain moves on. Empty: `provider` for every model.
+    std::function<core::Result<Provider>(const catalog::Provider&)> provider_for;
     std::span<const ToolSpec> tools;
     std::string system; // the system prompt: first in every request, not kept in the history
     // When set, the system prompt asked anew for each request instead (phase 12 § 6: the user's
     // rules and memory change between requests).
     std::function<std::string()> system_of;
-    // What answers (never null in a run: without it the run fails at once), what answers a request
-    // with a picture when `model` does not see them (null: none), and what writes the summary of
-    // an old history (null: `model`). Each request's limit and price are those of the model it
-    // goes to.
+    // The model chosen (never null in a run: without it the run fails at once), and what writes
+    // the summary of an old history (null: `model`). Each request's limit and price are those of
+    // the model it goes to.
     const catalog::Model* model = nullptr;
-    const catalog::Model* vision_model = nullptr;
     const catalog::Model* summary_model = nullptr;
+    // Stage 4c: each turn takes its role's chain (by a picture in it and the level) and goes to the
+    // first model that can do what is needed and has not failed in this request; an empty chain is
+    // `model` alone. A turn that fails before its first piece moves on (routing::why_of).
+    routing::Chains chains;
     Thinking thinking = Thinking::Low;
     Limits limits;
     std::function<Result(const ToolCall&)> execute;          // a known tool with arguments that parse
@@ -98,6 +115,7 @@ struct Outcome {
     core::Error error;
     Usage usage; // all turns together
     double usd = 0;
+    const catalog::Model* model = nullptr; // the last turn's: who answered, or on whom it failed
 };
 
 // One request in the conversation `history` (the user's request, the model's turns and the tools'

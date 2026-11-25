@@ -22,7 +22,7 @@
 
 namespace app::tray_menu {
 
-enum class Kind : std::uint8_t { Header, Section, Model, Thinking, Budget, BudgetValue, Item, Settings, SettingsItem, Separator };
+enum class Kind : std::uint8_t { Header, Section, Model, Thinking, Budget, BudgetValue, Item, Settings, SettingsItem, Separator, Theme };
 
 struct Row {
     Kind kind = Kind::Item;
@@ -72,12 +72,14 @@ inline constexpr float kWidth = 372.0f;
 inline constexpr unsigned kOpenId = 1;  // the shell's "Open agent"
 inline constexpr unsigned kQuitId = 2;  // "Quit"
 inline constexpr unsigned kDebugId = 3; // "Debug window (F12)", debug builds
+inline constexpr unsigned kPauseId = 4; // "Pause agent" / "Resume agent" (stage 4d-2)
 
 // `room`: the work area's height (logical pixels). A list open that would take the menu past it
 // folds the Model and Thinking sections away (the header's badge still says the choice), and if
 // that is not enough the budget's list closes for the settings'.
+// `paused` (stage 4d-2): the agent paused — Resume agent, and the header says so.
 auto layout(const config::Config& c, std::span<const settings::Item> items, bool working, bool settings_open, bool budget_open,
-            bool debug, float room = std::numeric_limits<float>::infinity()) -> std::vector<Row>;
+            bool debug, float room = std::numeric_limits<float>::infinity(), bool paused = false) -> std::vector<Row>;
 [[nodiscard]] auto height(const std::vector<Row>& rows) -> float;
 // Its height with its lists all the way open.
 [[nodiscard]] auto full_height(const std::vector<Row>& rows) -> float;

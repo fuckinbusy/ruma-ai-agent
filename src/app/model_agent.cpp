@@ -4,6 +4,7 @@
 #include "ai/chat.hpp"
 #include "ai/prompt.hpp"
 #include "ai/schema.hpp"
+#include "app/failure.hpp"
 #include "app/memory.hpp"
 #include "app/present.hpp"
 #include "app/report.hpp"
@@ -496,26 +497,30 @@ struct Agent::State {
             post({task, events::Failed{std::format("No such model: {}", chosen_id), {}}});
             return;
         }
-        const ai::catalog::Provider& by = ai::catalog::provider_of(*model);
-        auto chosen = provider(by);
-        if (!chosen) {
-            post({task, events::Failed{ai::chat::no_key(by), {{"set_key", "Add key", true}}}});
-            post({task, events::ProviderState{std::string{by.id}, events::Trouble::NoKey}});
-            return;
-        }
         ai::agent::Setup setup;
-        setup.provider = std::move(*chosen);
+        // Stage 4c: each model of the chain is asked with its own provider's key; none here moves on.
+        setup.provider_for = [this](const ai::catalog::Provider& p) -> core::Result<ai::Provider> {
+            if (auto got = provider(p)) {
+                return std::move(*got);
+            }
+            auto e = core::make_error(core::Code::Api, ai::chat::no_key(p));
+            e.error().kind = "no_key";
+            return e;
+        };
         setup.tools = specs;
         setup.system = system;
         if (memory) {
             setup.system_of = [this] { return system_now(); }; // the rules and the memory as they are now
         }
         setup.model = model;
-        // Until roles are set by the user (stage 4c): a picture goes to the first model of the same
-        // provider that sees, the summary to its cheapest.
-        const auto others = ai::catalog::beside(*model);
-        setup.vision_model = others.vision;
-        setup.summary_model = others.summary;
+        // Stage 4c: the roles' chains from the chosen model; the summary on its provider's cheapest.
+        setup.chains = ai::routing::chains(s.roles, *model);
+        for (auto* chain : {&setup.chains.chat, &setup.chains.hard, &setup.chains.images}) { // switched off (4d-2)
+            std::erase_if(*chain, [&](const ai::catalog::Model* x) {
+                return x != model && std::ranges::find(s.disabled, x->id) != s.disabled.end();
+            });
+        }
+        setup.summary_model = ai::catalog::beside(*model).summary;
         setup.thinking = job.thinking_once.empty() ? s.thinking : thinking_of(job.thinking_once);
         setup.limits.budget_usd = s.budget_usd;
         setup.now = [] { return std::chrono::system_clock::now(); };
@@ -641,6 +646,16 @@ struct Agent::State {
                 post({job.task, std::move(*plan)});
                 return {.content = R"({"shown":true})", .ok = true};
             }
+            if (call.name == present::kSettings) {
+                // Stage 4d-2: the settings opened on a section for the user; nothing is changed by it.
+                const auto section = present::settings_section(call.arguments);
+                if (!section) {
+                    return {.content = R"({"error":"section is one of general, appearance, models, roles, rules_and_memory, privacy, shortcuts"})",
+                            .ok = false};
+                }
+                post({job.task, events::OpenSettings{*section}});
+                return {.content = std::format(R"({{"opened":"{}"}})", *section), .ok = true};
+            }
             if (call.name == present::kSuggest) {
                 // The model's next prompts, as chips under the answer: nothing runs.
                 auto chips = present::suggestions(call.arguments);
@@ -722,8 +737,20 @@ struct Agent::State {
         setup.events.on_repeat = [this, task](std::string_view) { // the model is told; the user, quietly
             post({task, events::Thinking{"Repeating itself \xE2\x80\x94 told to stop"}});
         };
-        const ai::catalog::Model* saw = nullptr; // a request went to this model for a picture: the cost line says so
-        setup.events.on_vision_model = [&saw](const ai::catalog::Model& m) { saw = &m; };
+        // Stage 4c: a turn that went elsewhere is said in the conversation; a provider that failed on
+        // the way (its key, no key, no connection) is marked in the model menu as it is.
+        bool pictures_elsewhere = false; // the cost line's old mark: a picture's turn went to another model
+        setup.events.on_routed = [this, task, &pictures_elsewhere](const ai::agent::Route& r) {
+            pictures_elsewhere = pictures_elsewhere || (r.need == ai::routing::Need::Images && r.to != r.from && !r.words_only);
+            post({task, events::Routed{std::string{r.to->id}, std::string{r.from->id}, r.why, r.need, r.words_only}});
+            const events::Trouble trouble = r.why == ai::routing::Why::KeyRejected ? events::Trouble::KeyRejected
+                                            : r.why == ai::routing::Why::NoKey     ? events::Trouble::NoKey
+                                            : r.why == ai::routing::Why::Offline   ? events::Trouble::Offline
+                                                                                   : events::Trouble::None;
+            if (trouble != events::Trouble::None) {
+                post({task, events::ProviderState{std::string{r.from->provider}, trouble}});
+            }
+        };
         // Each turn's usage as the API gave it: the log the interface's cost line is checked against.
         setup.events.on_usage = [task](const ai::Usage& u, double usd) {
             WA_INFO("ai", "task {} usage: prompt {} (cache hit {}, miss {}), completion {} (reasoning {}); so far ${:.6f}", task, u.prompt,
@@ -748,24 +775,22 @@ struct Agent::State {
             }
             for (auto& e : job.view->answered(out.text, out.usage, out.usd, all_said)) {
                 if (auto* spent = std::get_if<events::Spent>(&e)) {
-                    spent->vision = saw != nullptr;
-                    // design/ui_model: the answer says what it was made with (Flash for a picture).
-                    spent->model = saw != nullptr ? std::string{saw->id} : chosen_id;
+                    spent->vision = pictures_elsewhere;
+                    // Screen 05: the answer says the model that made it (stage 4c: the loop's outcome).
+                    spent->model = out.model != nullptr ? std::string{out.model->id} : chosen_id;
                     spent->thinking = std::string{thinking_id(setup.thinking)};
                     spent->chosen = chosen_id;
                 }
                 post({task, std::move(e)});
             }
-            post({task, events::ProviderState{std::string{by.id}, events::Trouble::None}});
+            post({task, events::ProviderState{std::string{(out.model != nullptr ? *out.model : *model).provider}, events::Trouble::None}});
             break;
         case ai::agent::End::Failed: {
-            const events::Trouble trouble = trouble_of(out.error);
-            const bool keyless = trouble == events::Trouble::NoKey || trouble == events::Trouble::KeyRejected;
-            job.trouble = events::ProviderState{std::string{by.id}, trouble};
-            job.failure = events::Failed{out.error.message,
-                                         keyless ? std::vector<events::Action>{{"set_key", "Add key", true}}
-                                                 : std::vector<events::Action>{{"retry", "Retry", true}},
-                                         turn_said};
+            // Stage 4c: the card names the provider of the model it failed on, the last of its chain.
+            const ai::catalog::Model& last = out.model != nullptr ? *out.model : *model;
+            auto shown = failure::card(out.error, last);
+            job.trouble = events::ProviderState{std::string{last.provider}, trouble_of(out.error)};
+            job.failure = events::Failed{out.error.message, std::move(shown.actions), turn_said, std::move(shown.card)};
             break;
         }
         case ai::agent::End::Stopped:
@@ -825,6 +850,9 @@ Agent::Agent(Post post, agent::Host host, Settings settings, ai::Provider provid
     s.specs.push_back({.name = std::string{present::kPlanUpdate},
                        .description = std::string{present::kPlanUpdateDescription},
                        .schema = std::string{present::kPlanUpdateSchema}});
+    s.specs.push_back({.name = std::string{present::kSettings},
+                       .description = std::string{present::kSettingsDescription},
+                       .schema = std::string{present::kSettingsSchema}});
     s.specs.push_back({.name = std::string{present::kSuggest},
                        .description = std::string{present::kSuggestDescription},
                        .schema = std::string{present::kSuggestSchema}});

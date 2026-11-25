@@ -61,11 +61,10 @@ struct Model {
 [[nodiscard]] auto provider(std::string_view id) noexcept -> const Provider*;
 [[nodiscard]] auto model(std::string_view id) noexcept -> const Model*;
 [[nodiscard]] auto provider_of(const Model& m) noexcept -> const Provider&;
-// The models that stand in for `m`, of its own provider: the first that sees pictures (m itself
-// when it does; null: none), and the cheapest by its output's price, for the summary of an old
-// history. One rule for whoever runs the loop, until the user sets roles (stage 4c).
+// The model that stands in for `m`, of its own provider: the cheapest by its output's price, for
+// the summary of an old history. One rule for whoever runs the loop (pictures follow the Images
+// role since stage 4c: ai::routing).
 struct Beside {
-    const Model* vision = nullptr;
     const Model* summary = nullptr;
 };
 [[nodiscard]] auto beside(const Model& m) noexcept -> Beside;

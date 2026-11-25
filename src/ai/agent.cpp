@@ -83,25 +83,16 @@ struct Asked {
     ChatRequest request;
     const catalog::Model* model = nullptr; // the one it goes to
 };
-auto request_of(const std::vector<Message>& history, const Setup& s) -> Asked {
-    const catalog::Model* to = s.model;
+// The request to `to`: a model that does not see pictures gets them as words (the history keeps them).
+auto request_of(const std::vector<Message>& history, const Setup& s, const catalog::Model* to) -> Asked {
     ChatRequest r;
     r.tools = s.tools;
     if (std::string system = s.system_of ? s.system_of() : s.system; !system.empty()) {
         r.messages.push_back(said(Role::System, std::move(system)));
     }
     r.messages.insert(r.messages.end(), history.begin(), history.end());
-    // A model that does not see pictures: a request with one goes to the model that does, the
-    // setting stays; with none that does, the pictures go as words (the history keeps them).
-    if (to->vision != catalog::Tri::Yes && std::ranges::any_of(r.messages, [](const Message& m) { return !m.images.empty(); })) {
-        if (s.vision_model != nullptr) {
-            to = s.vision_model;
-            if (s.events.on_vision_model) {
-                s.events.on_vision_model(*to);
-            }
-        } else {
-            thin_images(r.messages, 0, 0);
-        }
+    if (to->vision != catalog::Tri::Yes) {
+        thin_images(r.messages, 0, 0);
     }
     r.model = std::string{to->id};
     r.thinking = catalog::nearest_level(*to, s.thinking); // a level it does not take: the nearest it has
@@ -121,6 +112,92 @@ auto request_of(const std::vector<Message>& history, const Setup& s) -> Asked {
     return {.request = std::move(r), .model = to};
 }
 
+// What has failed in this request (stage 4c): single models, and whole providers.
+struct Out {
+    std::vector<std::pair<const catalog::Model*, routing::Why>> models;
+    std::vector<std::pair<std::string_view, routing::Why>> providers;
+
+    [[nodiscard]] auto why(const catalog::Model* m) const -> std::optional<routing::Why> {
+        for (const auto& [model, why] : models) {
+            if (model == m) {
+                return why;
+            }
+        }
+        for (const auto& [provider, why] : providers) {
+            if (provider == m->provider) {
+                return why;
+            }
+        }
+        return std::nullopt;
+    }
+    void add(const catalog::Model* m, routing::Why why) {
+        if (routing::provider_wide(why)) {
+            providers.emplace_back(m->provider, why);
+        } else {
+            models.emplace_back(m, why);
+        }
+    }
+};
+
+// The model a turn goes to: the first of its role's chain that can do what is needed and is not out;
+// with none that can, the first of Chat's that is not out (a picture then goes as words). Null: all out.
+struct Pick {
+    const catalog::Model* to = nullptr;
+    Route route;
+    bool say = false; // not the chosen model, or pictures as words
+};
+auto pick(const std::vector<Message>& history, const Setup& s, const Out& out) -> Pick {
+    const bool picture = std::ranges::any_of(history, [](const Message& m) { return !m.images.empty(); });
+    const routing::Need need = routing::need_of(picture, s.thinking);
+    const auto chain_of = [&s](routing::Need n) -> std::span<const catalog::Model* const> {
+        const auto& c = n == routing::Need::Images ? s.chains.images : n == routing::Need::Hard ? s.chains.hard : s.chains.chat;
+        return c.empty() ? std::span<const catalog::Model* const>{&s.model, 1} : std::span<const catalog::Model* const>{c};
+    };
+    const auto can = [need](const catalog::Model& m) {
+        return need == routing::Need::Images ? m.vision == catalog::Tri::Yes
+               : need == routing::Need::Hard ? m.thinking == catalog::Tri::Yes
+                                             : true;
+    };
+    const catalog::Model* failed = nullptr; // the first of the walk that was out: why it went elsewhere
+    routing::Why failed_why = routing::Why::Role;
+    const auto walk = [&](routing::Need n, bool check) -> const catalog::Model* {
+        for (const auto* m : chain_of(n)) {
+            if (const auto why = out.why(m)) {
+                if (failed == nullptr) {
+                    failed = m;
+                    failed_why = *why;
+                }
+                continue;
+            }
+            if (!check || can(*m)) {
+                return m;
+            }
+        }
+        return nullptr;
+    };
+    Pick p;
+    p.to = walk(need, true);
+    bool words_only = false;
+    if (p.to == nullptr && need != routing::Need::Chat) {
+        p.to = walk(routing::Need::Chat, false);
+        words_only = p.to != nullptr && need == routing::Need::Images && p.to->vision != catalog::Tri::Yes;
+    }
+    if (p.to == nullptr) {
+        return p;
+    }
+    p.route = {.to = p.to, .from = s.model, .why = routing::Why::Role, .need = need, .words_only = words_only};
+    if (failed != nullptr) {
+        p.route.from = failed;
+        p.route.why = failed_why;
+    } else if (need == routing::Need::Images && (words_only || s.model->vision != catalog::Tri::Yes)) {
+        p.route.why = routing::Why::NoVision;
+    } else if (need == routing::Need::Hard && s.model->thinking != catalog::Tri::Yes) {
+        p.route.why = routing::Why::NoThinking;
+    }
+    p.say = p.to != s.model || words_only;
+    return p;
+}
+
 auto failure_of(Finish f, std::string_view who) -> std::optional<std::string> {
     switch (f) {
     case Finish::ContentFilter: return std::format("{} withheld the answer (content filter)", who);
@@ -132,7 +209,8 @@ auto failure_of(Finish f, std::string_view who) -> std::optional<std::string> {
 
 // A request whose words nobody sees as they come (the summary, phase 12 § 10): its message and
 // usage once it ended well; a failure, a cut or a stop: why.
-auto ask_once(const ChatRequest& request, const Setup& s, std::stop_token stop) -> core::Result<std::pair<Message, Usage>> {
+auto ask_once(const ChatRequest& request, const catalog::Model& to, const Setup& s, std::stop_token stop)
+    -> core::Result<std::pair<Message, Usage>> {
     auto channel = std::make_shared<Channel>();
     StreamSink sink{.on_delta =
                         [channel](const Delta& d) {
@@ -146,7 +224,15 @@ auto ask_once(const ChatRequest& request, const Setup& s, std::stop_token stop) 
                             channel->done = std::move(r);
                             channel->cv.notify_all();
                         }};
-    const Stream stream = s.provider(request, std::move(sink));
+    Provider by = s.provider;
+    if (s.provider_for) {
+        auto got = s.provider_for(catalog::provider_of(to));
+        if (!got) {
+            return std::unexpected{got.error()};
+        }
+        by = std::move(*got);
+    }
+    const Stream stream = by(request, std::move(sink));
     const std::stop_callback on_stop{stop, [&stream] {
                                          if (stream.cancel) {
                                              stream.cancel();
@@ -201,7 +287,14 @@ auto run(std::vector<Message>& history, std::string_view request, std::vector<Im
     if (!asked.images.empty()) {
         thin_images(history, kImagesMost, kImagesKept);
     }
-    return resume(history, s, std::move(stop));
+    const std::size_t kept = history.size();
+    auto out = resume(history, s, std::move(stop));
+    // No key for any model of the chain: nothing was sent, and there is no Retry for it — the user
+    // asks again once a key is in, so the request is not kept (it would be there twice).
+    if (out.end == End::Failed && out.error.kind == "no_key" && history.size() == kept) {
+        history.pop_back();
+    }
+    return out;
 }
 
 auto thin_images(std::vector<Message>& history, std::size_t most, std::size_t keep) -> std::size_t {
@@ -243,6 +336,10 @@ auto resume(std::vector<Message>& history, const Setup& s, std::stop_token stop)
     Repeats repeats;      // the loop guard (phase 12 § 9)
     std::size_t last_prompt = 0; // the last turn's prompt tokens: past 60 % of the limit, a summary (§ 10)
     bool answering = false; // "Answer now" pressed: every request from then on without thinking
+    Out gone;               // stage 4c: what failed in this request, and is not asked again
+    core::Error last_error = core::make_error(core::Code::InvalidArgument, "no model can take this request").error();
+    const catalog::Model* last_model = s.model;
+    std::vector<Route> said_routes; // each route said once a request
     const auto pressed = [&] { return s.answer_now != nullptr && s.answer_now->load(); };
     const auto cancelled = [&](std::string partial = {}) {
         out.end = End::Cancelled;
@@ -281,7 +378,7 @@ auto resume(std::vector<Message>& history, const Setup& s, std::stop_token stop)
         if (static_cast<double>(last_prompt) > compact::kAt * static_cast<double>(last_context)) {
             last_prompt = 0;
             if (const auto at = compact::split(history); at > 0) {
-                auto summary = ask_once(compact::summary_request(std::span{history}.first(at), summary_by), s, stop);
+                auto summary = ask_once(compact::summary_request(std::span{history}.first(at), summary_by), summary_by, s, stop);
                 if (stop.stop_requested()) {
                     return cancelled();
                 }
@@ -320,12 +417,42 @@ auto resume(std::vector<Message>& history, const Setup& s, std::stop_token stop)
         if (s.events.on_turn) {
             s.events.on_turn();
         }
-        Asked going = request_of(history, s);
+        // Stage 4c: the turn's model by its role, and that model's provider (its key); a provider
+        // with no key here is out, and the chain moves on.
+        Pick chosen;
+        std::optional<Provider> by;
+        while (!by) {
+            chosen = pick(history, s, gone);
+            if (chosen.to == nullptr) {
+                out.end = End::Failed;
+                out.error = last_error;
+                out.model = last_model;
+                return out;
+            }
+            if (!s.provider_for) {
+                by = s.provider;
+            } else if (auto got = s.provider_for(catalog::provider_of(*chosen.to))) {
+                by = std::move(*got);
+            } else {
+                gone.add(chosen.to, routing::why_of(got.error()).value_or(routing::Why::NoKey));
+                last_error = got.error();
+                last_model = chosen.to;
+            }
+        }
+        if (chosen.say && s.events.on_routed &&
+            std::ranges::none_of(said_routes, [&](const Route& r) {
+                return r.to == chosen.route.to && r.why == chosen.route.why && r.words_only == chosen.route.words_only;
+            })) {
+            said_routes.push_back(chosen.route);
+            s.events.on_routed(chosen.route);
+        }
+        Asked going = request_of(history, s, chosen.to);
+        out.model = going.model;
         ChatRequest& asked = going.request;
         if (answering) {
             asked.thinking = catalog::nearest_level(*going.model, Thinking::Off); // none, or the least it has
         }
-        const Stream stream = s.provider(asked, std::move(sink));
+        const Stream stream = (*by)(asked, std::move(sink));
         ++turns;
         const std::stop_callback on_stop{stop, [&stream] {
                                              if (stream.cancel) {
@@ -336,6 +463,7 @@ auto resume(std::vector<Message>& history, const Setup& s, std::stop_token stop)
         Assembler turn;
         std::optional<core::Result<void>> done;
         bool cut_short = false; // "Answer now" during the turn: it is dropped, the loop asks again
+        bool got_any = false;   // a piece came: the user may have seen it, so a failure moves nowhere
         while (!done) {
             std::vector<Delta> got;
             {
@@ -354,6 +482,9 @@ auto resume(std::vector<Message>& history, const Setup& s, std::stop_token stop)
                     return cancelled(turn.message().content);
                 }
                 turn.add(d);
+                // A piece the user can see: words, a thought or a call (DeepSeek's first chunk carries
+                // only the role, an empty content).
+                got_any = got_any || !d.content.empty() || !d.reasoning.empty() || d.tool_index >= 0;
                 if (!d.reasoning.empty() && s.events.on_reasoning) {
                     s.events.on_reasoning(d.reasoning);
                 }
@@ -376,6 +507,15 @@ auto resume(std::vector<Message>& history, const Setup& s, std::stop_token stop)
             continue; // not kept; the next request asks for the answer
         }
         if (!*done) {
+            // Before its first piece, a failure that is the model's or its provider's (busy, no
+            // answer, the key): that one is out for this request, the turn goes to the next.
+            if (const auto why = routing::why_of(done->error()); why && !got_any) {
+                gone.add(going.model, *why);
+                last_error = done->error();
+                last_model = going.model;
+                --turns;
+                continue;
+            }
             out.end = End::Failed;
             out.error = done->error();
             out.text = turn.message().content;

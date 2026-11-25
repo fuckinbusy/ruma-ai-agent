@@ -32,11 +32,13 @@ struct Group {
 // The search is by a model's short name, its provider's name and monogram, any case: a match at a
 // word's start comes before one inside a word. Groups with no match go; providers without a key
 // come last. `states` are the agent's ProviderState events in order: the last of a provider counts.
+// `disabled`: the models switched off in Models (stage 4d-2), never listed.
 [[nodiscard]] auto groups(std::string_view query, std::span<const events::ProviderState> states,
-                          std::span<const ai::catalog::Provider> providers, std::span<const ai::catalog::Model> models)
-    -> std::vector<Group>;
+                          std::span<const ai::catalog::Provider> providers, std::span<const ai::catalog::Model> models,
+                          std::span<const std::string> disabled = {}) -> std::vector<Group>;
 // The catalog's own.
-[[nodiscard]] auto groups(std::string_view query, std::span<const events::ProviderState> states) -> std::vector<Group>;
+[[nodiscard]] auto groups(std::string_view query, std::span<const events::ProviderState> states,
+                          std::span<const std::string> disabled = {}) -> std::vector<Group>;
 
 // The group's header, right: "key rejected", "busy", "offline", "balance empty"; while searching
 // "1 of 3"; empty when all is well.

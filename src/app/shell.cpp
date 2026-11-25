@@ -1,4 +1,5 @@
 #include "app/shell.hpp"
+#include "app/spend.hpp"
 
 #include "ai/catalog.hpp"
 #include "app/backdrop.hpp"
@@ -308,6 +309,7 @@ private:
     // (`now`); what it would say comes as notifications meanwhile.
     void update_handle_hidden(double now);
     void watch_strip(double now);
+    bool paused_ = false; // stage 4d-2: the tray's Pause agent (not kept past a restart)
     // The user's text size (config.json text_scale) on top of the Windows one.
     void apply_text_scale();
     void apply_transparency();
@@ -373,6 +375,12 @@ private:
     // Tray -> Settings -> Rules and memory… (phase 12 § 6): the list in the panel; its rules row
     // opens agent.md; its Forget all asks first.
     void show_memory();
+    // Stage 4d-1: the settings mode — opened on a section (or the last), its items and lists made
+    // from config.json and the agent's data; made again after a change.
+    void open_settings(std::optional<sheet::Section> section = std::nullopt);
+    void refresh_settings(bool lists = true); // `lists` false: the items only (a setting changed)
+    // Stage 4d-2: an answer's cost added to this month's (data\spend.json), the settings' copy too.
+    void keep_spent(const events::Spent& spent);
     void open_rules();
     void forget_all();
     [[nodiscard]] auto change_log() const -> events::Log;
@@ -838,6 +846,8 @@ auto Shell::start(const std::filesystem::path& data_dir) -> bool {
     model_.has_key = !model_agent_ || options_.smoke || !options_.replay.empty() ||
                      security::load_key(ai::catalog::default_provider().id, data_dir_ / L"secrets.bin", ai::catalog::default_provider().id).has_value();
     model_.choice = settings::choice_of(config_.ai); // design/ui_model: the orb and the bar show it
+    model_.roles = config_.ai.roles;                 // stage 4c: where a request goes, the chip shows
+    model_.disabled = config_.ai.disabled;           // stage 4d-2: not in the menu
     model_.budget_usd = config_.ai.budget_usd;
 
     if (options_.smoke) {
@@ -1144,6 +1154,15 @@ void Shell::tray_choice(UINT chosen, HWND before) {
         toggle_debug();
         return;
     }
+    if (chosen == tray_menu::kPauseId) { // stage 4d-2: the shortcut and the window watcher stop, the sign fades
+        paused_ = !paused_;
+        if (painter_) {
+            painter_->set_paused(paused_);
+        }
+        WA_INFO("app", "agent {}", paused_ ? "paused" : "resumed");
+        wants_frame_ = true;
+        return;
+    }
     if (chosen == kMenuExit) {
         quit_ = true;
         PostQuitMessage(0);
@@ -1153,6 +1172,8 @@ void Shell::tray_choice(UINT chosen, HWND before) {
         show_change_log();
     } else if (chosen == settings::kMemoryId) {
         show_memory();
+    } else if (chosen == settings::kSettingsId) {
+        open_settings();
     } else if (chosen == settings::kApiKeyId) {
         open_sheet("api key"); // first: the window takes clicks, focus and keys
         if (model_.open) {
@@ -1278,7 +1299,8 @@ void Shell::layout_tray_menu() {
     const double now = seconds();
     const bool settings_in = menu_settings_.open() || menu_settings_.moving(now);
     const bool budget_in = menu_budget_.open() || menu_budget_.moving(now);
-    menu_rows_ = tray_menu::layout(config_, settings::menu(config_, live_hotkey_, monitor_hz_), working, settings_in, budget_in, kDebug, room);
+    menu_rows_ = tray_menu::layout(config_, settings::menu(config_, live_hotkey_, monitor_hz_), working, settings_in, budget_in, kDebug, room,
+                                   paused_);
     if (budget_in && std::ranges::none_of(menu_rows_, [](const tray_menu::Row& r) { return r.in == tray_menu::Row::In::Budget; })) {
         menu_budget_ = {}; // a small screen closed it for the settings': shut, so a click opens it again
     }
@@ -1385,6 +1407,7 @@ void Shell::tray_menu_click(std::size_t index) {
     }
     case Kind::Model:
     case Kind::Thinking:
+    case Kind::Theme:
     case Kind::BudgetValue:
     case Kind::SettingsItem:
         if (row.id == settings::kAuditId || row.id == settings::kMemoryId) { // an action, not a setting
@@ -1510,6 +1533,58 @@ void Shell::show_change_log() {
 }
 
 // Rules and memory (phase 12 § 6): the list in the panel, from the agent's memory as it is now.
+void Shell::open_settings(std::optional<sheet::Section> section) {
+    refresh_settings();
+    sheet::open_settings(model_, section); // where closing goes back to, before the window opens
+    open_sheet("settings");                // its styles, focus and monitor, as every opening (final review C1)
+    wants_frame_ = true;
+}
+
+namespace {
+
+// "2026-11" by Win32's local time (not chrono's zones: they keep memory, the leak check).
+auto this_month() -> std::string {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    return std::format("{:04}-{:02}", now.wYear, now.wMonth);
+}
+
+} // namespace
+
+void Shell::keep_spent(const events::Spent& spent) {
+    const auto* model = ai::catalog::model(spent.model);
+    if (model == nullptr) {
+        return;
+    }
+    const auto file = data_dir_ / L"spend.json";
+    if (model_.settings.spend.month.empty()) {
+        model_.settings.spend = spend::load(file);
+    }
+    spend::add(model_.settings.spend, model->provider, spent.usd, static_cast<std::int64_t>(spent.prompt) + spent.completion,
+               this_month());
+    if (config_writable_) { // a smoke run writes nothing of the user's
+        if (auto saved = spend::save(file, model_.settings.spend); !saved) {
+            WA_WARN("app", "spend.json not saved: {}", saved.error().message);
+        }
+    }
+}
+
+void Shell::refresh_settings(bool lists) {
+    if (model_.settings.spend.month.empty()) {
+        model_.settings.spend = spend::load(data_dir_ / L"spend.json");
+    }
+    spend::keep_month(model_.settings.spend, this_month()); // last month's is not this month's (4d-2 review I4)
+    model_.settings.pages = settings::pages(config_, live_hotkey_, monitor_hz_);
+    if (!lists) {
+        wants_frame_ = true;
+        return;
+    }
+    const auto entries = model_agent_ ? model_agent_->memory_entries() : std::vector<memory::Entry>{};
+    const auto rules = model_agent_ ? model_agent_->private_rules() : std::vector<tools::winsys::PrivateRule>{};
+    sheet::settings_lists(model_, present::memory_set(entries, {}, false), present::private_set(rules));
+    wants_frame_ = true;
+}
+
 void Shell::show_memory() {
     const auto entries = model_agent_ ? model_agent_->memory_entries() : std::vector<memory::Entry>{};
     const auto rules = model_agent_ ? model_agent_->private_rules() : std::vector<tools::winsys::PrivateRule>{};
@@ -1540,8 +1615,10 @@ void Shell::forget_all() {
     if (choice != IDYES) {
         return;
     }
-    send(events::Forget{.id = 0, .all = true});
-    sheet::show_memory(model_, present::memory_set({}, model_agent_ ? model_agent_->private_rules() : std::vector<tools::winsys::PrivateRule>{}));
+    send(events::Forget{.id = 0, .all = true}); // the settings' lists made again by send (stage 4d-1)
+    if (!model_.settings.open) {
+        sheet::show_memory(model_, present::memory_set({}, model_agent_ ? model_agent_->private_rules() : std::vector<tools::winsys::PrivateRule>{}));
+    }
     wants_frame_ = true;
 }
 
@@ -1614,6 +1691,8 @@ void Shell::apply_setting(unsigned id) {
     }
     if (change->ai) {
         model_.choice = settings::choice_of(config_.ai); // the orb and the bar show it at once
+        model_.roles = config_.ai.roles;
+        model_.disabled = config_.ai.disabled;
         model_.budget_usd = config_.ai.budget_usd;
         if (model_agent_) {
             model_agent_->set_settings(model_settings());
@@ -1808,8 +1887,11 @@ void Shell::send(events::Command command) {
         }
     }
     const bool private_added = std::holds_alternative<events::AddPrivate>(command);
+    const bool forgot = std::holds_alternative<events::Forget>(command);
     to_agent(std::move(command));
-    if (private_added) {
+    if ((private_added || forgot) && model_.settings.open) {
+        refresh_settings(); // stage 4d-1: the section's lists again, as the agent keeps them now
+    } else if (private_added) {
         show_memory(); // the rule kept: the list again, with it
     }
 }
@@ -1831,6 +1913,8 @@ auto Shell::model_settings() const -> model::Settings {
     return model::Settings{.model = a.model,
                            .thinking = model::thinking_of(a.thinking),
                            .budget_usd = a.budget_usd,
+                           .roles = a.roles,
+                           .disabled = a.disabled,
                            .secrets = data_dir_ / L"secrets.bin",
                            .proxy = config_.network.proxy};
 }
@@ -1850,8 +1934,32 @@ void Shell::choose_model(sheet::ModelChoice choice) {
 }
 
 void Shell::react(const sheet::Reaction& r) {
+    if (model_.settings.open && model_.settings.pages[0].empty()) {
+        refresh_settings(); // opened by the model (Add key, Update key: Models' key field, stage 4d-2)
+    }
+    if (r.setting) { // stage 4d-1: a settings item chosen in the settings mode, applied as the tray's
+        if (*r.setting == settings::kChangeLogId || *r.setting == settings::kAuditId) {
+            model_.settings.open = false; // the log is a screen of its own: the settings give way to it
+        }
+        tray_choice(*r.setting, nullptr);
+        if (model_.settings.open) {
+            refresh_settings(false); // the lists as they are: their table and scroll stay (final review M3)
+        }
+    }
     if (r.choose) {
         choose_model(*r.choose);
+    }
+    if (r.role) { // a role's model from Roles (stage 4d-2): config.json and the agent
+        (r.role->need == ai::routing::Need::Images ? config_.ai.roles.images : config_.ai.roles.hard).model = r.role->model;
+        model_.roles = config_.ai.roles;
+        if (model_agent_) {
+            model_agent_->set_settings(model_settings());
+        }
+        if (config_writable_) {
+            if (auto saved = config::save(data_dir_ / "config.json", config_); !saved) {
+                WA_WARN("app", "config.json not saved: {}", saved.error().message);
+            }
+        }
     }
     if (r.budget) { // the picker's budget per task (design/ui_model): as the tray's
         config_.ai.budget_usd = *r.budget;
@@ -2181,7 +2289,7 @@ void Shell::update_handle_hidden(double now) {
 }
 
 void Shell::watch_strip(double now) {
-    if (model_.open || handle_hidden_ || now - strip_checked_at_ < 1.0) {
+    if (model_.open || handle_hidden_ || paused_ || now - strip_checked_at_ < 1.0) { // paused: the watcher stops (4d-2)
         return;
     }
     strip_checked_at_ = now;
@@ -2273,6 +2381,14 @@ void Shell::drain_agent() {
     }
     for (const auto& e : drained_) {
         sheet::apply(model_, e);
+        if (const auto* spent = std::get_if<events::Spent>(&e.event); spent != nullptr && !spent->model.empty()) {
+            keep_spent(*spent); // stage 4d-2: this month's spending, Models' last line
+        }
+        if (const auto* o = std::get_if<events::OpenSettings>(&e.event); o != nullptr && e.task == model_.task && model_.open) {
+            if (const auto section = sheet::section_of(o->section)) {
+                open_settings(*section); // the model's ui.settings, for the task in front (4d-2 review M4)
+            }
+        }
         // A question waits for the user: the sheet comes up with its card (not over a fullscreen
         // app: then it waits, and the card is there when the sheet is opened).
         if (sheet::opens_sheet(model_, e)) { // a background task's question waits in its card instead
@@ -2462,6 +2578,9 @@ void Shell::field_moved(std::size_t from, bool shift) {
 
 void Shell::on_key(WPARAM vk) {
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    // Stage 4d-1: the settings on top, none of their fields focused — the bar behind them takes nothing.
+    const bool behind_settings = model_.open && sheet::view(model_) == sheet::View::Settings && !model_.private_focus && !model_.filter_focus &&
+                                 !model_.settings.key_open; // Models' key field takes a paste (4d-2 review I1)
     const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     std::optional<sheet::Key> key;
     switch (vk) {
@@ -2528,7 +2647,7 @@ void Shell::on_key(WPARAM vk) {
         key = sheet::Key::Down;
         break;
     case 'V':
-        if (ctrl) {
+        if (ctrl && !behind_settings) {
             paste(shift); // Ctrl+Shift+V: as text, whatever its length (phase 10, screen 31)
         }
         break;
@@ -2561,6 +2680,9 @@ void Shell::on_key(WPARAM vk) {
         }
         break;
     case 'E':
+        if (behind_settings) {
+            break; // the bar's editor is behind the settings (final review I3)
+        }
         if (ctrl && shift) { // the panel's table to XLSX (phase 10): drawn by its next frame
             model_.export_xlsx = true;
         } else if (ctrl) { // the field as the editor, or folded back (phase 10, screen 29)
@@ -2568,11 +2690,19 @@ void Shell::on_key(WPARAM vk) {
         }
         break;
     case 'M': // MODEL_PICKER_SPEC § 8: Ctrl+M the model menu, Ctrl+Shift+M back to the model before
+        if (behind_settings) {
+            break; // its menu would open unseen behind the settings (final review I3)
+        }
         if (ctrl && shift) {
             react(sheet::toggle_model(model_, seconds()));
         } else if (ctrl) {
             model_.menu.open ? sheet::close_menu(model_) : sheet::open_menu(model_);
             ui_->clear_focus(); // the keys are the menu's (review I2)
+        }
+        break;
+    case VK_OEM_COMMA: // Ctrl+, the settings (SETTINGS_SPEC § 2), again: back
+        if (ctrl) {
+            model_.settings.open ? react(sheet::close_settings(model_)) : open_settings();
         }
         break;
     case VK_OEM_4: // Ctrl+[ and Ctrl+]: thinking a level down or up
@@ -2616,7 +2746,12 @@ LRESULT Shell::handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
     switch (msg) {
     case WM_HOTKEY:
-        if (wp == kHotkeyId) {
+        if (wp == kHotkeyId && paused_) {
+            // Paused (the tray's Pause agent, stage 4d-2): the shortcut does nothing; Show agent still does.
+        } else if (wp == kHotkeyId && model_.open && model_.settings.open) {
+            react(sheet::close_settings(model_)); // SETTINGS_SPEC § 4: back to the conversation, not away
+            wants_frame_ = true;
+        } else if (wp == kHotkeyId) {
             model_.open ? close_sheet("hotkey") : open_sheet("hotkey");
         }
         return 0;
@@ -2744,7 +2879,7 @@ LRESULT Shell::handle(UINT msg, WPARAM wp, LPARAM lp) {
             const bool on_target = painter_ && std::ranges::any_of(painter_->targets(), [&](const auto& t) {
                 return p.x >= t.box.x && p.x < t.box.x + t.box.w && p.y >= t.box.y && p.y < t.box.y + t.box.h;
             });
-            if (!on_target && placement::beside_sheet(p, open_box_, open_to_)) {
+            if (!on_target && !model_.settings.open && placement::beside_sheet(p, open_box_, open_to_)) { // settings stay (4d-1)
                 close_sheet("click beside");
                 return 0;
             }
@@ -2783,7 +2918,9 @@ LRESULT Shell::handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_ACTIVATE:
         // Gone to another program: the sheet closes; to its own dialog (a CSV's Save as): it stays.
-        if (LOWORD(wp) == WA_INACTIVE && model_.open && !focus::owned_by(reinterpret_cast<HWND>(lp), window_.get())) {
+        // The settings stay while the user is away (SETTINGS_SPEC § 4: a key fetched from the browser).
+        if (LOWORD(wp) == WA_INACTIVE && model_.open && !model_.settings.open &&
+            !focus::owned_by(reinterpret_cast<HWND>(lp), window_.get())) {
             close_sheet("focus lost");
         } else if (LOWORD(wp) == WA_INACTIVE && model_.menu.open) {
             sheet::close_menu(model_); // to its own dialog: the sheet stays, the model menu goes

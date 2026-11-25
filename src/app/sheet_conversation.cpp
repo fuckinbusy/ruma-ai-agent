@@ -1519,6 +1519,7 @@ auto Painter::draw_turn(Model& m, float x, float y0, float w, const Box& visible
         }
         y += kWho + 9;
     };
+    y += draw_switched(m.switched_to, x, y, w, measure); // stage 4c: a model the user changed to
     who(false, "You");
     const float bubble_text = 14.5f * ts;
     if (!question_ || question_text_ != m.question || question_scale_ != scale * ts) {
@@ -1609,6 +1610,8 @@ auto Painter::draw_turn(Model& m, float x, float y0, float w, const Box& visible
         y += mh + 10;
     }
 
+    // Stage 4c (screen 05): where it went instead of the model chosen, over the agent's words.
+    y += draw_routes(m.routes, x, y, std::min(w, kContentMax), measure);
     // The agent: its actions, its answer.
     who(true, "Agent");
     if (m.checklist && !m.checklist->items.empty()) { // the plan over the steps (phase 12 § 3)
@@ -2006,8 +2009,14 @@ auto Painter::draw_turn(Model& m, float x, float y0, float w, const Box& visible
         }
         y += bh + 10;
     }
-    // The result: done (a title and its line) or failed, and its buttons.
-    if (m.activity == Activity::Done && !m.done_title.empty()) {
+    // Stage 4c (screen 06): a provider's failure is its card, the buttons in it.
+    if (m.activity == Activity::Done && m.failed && !m.card.title.empty()) {
+        y += draw_failure_card(m, x, y, w, measure, r);
+        if (r.command) {
+            return y - y0;
+        }
+    } else if (m.activity == Activity::Done && !m.done_title.empty()) {
+        // The result: done (a title and its line) or failed, and its buttons.
         const float rh = 24.0f;
         if (!measure) {
             add_target("turn:result", {x, y, w, rh});
@@ -2127,16 +2136,14 @@ auto Painter::draw_turn(Model& m, float x, float y0, float w, const Box& visible
                 work::caption(*ui_, {mono.x + (kMono - mw) / 2, mono.y, mw + 1, kMono}, Face::Semibold, 8.5f, by.monogram, ui::th().text_2);
                 work::caption(*ui_, {mono.x + kMono + 6, badge.y, nw + 1, badge.h}, Face::Semibold, 11.5f, answered->full_name, ui::th().text_2);
                 add_target("answer:model", badge);
+                // Another model than the one chosen: says both; why is the turn's route note (stage 4c).
                 if (const auto* chosen = ai::catalog::model(m.spent->chosen);
                     chosen != nullptr && chosen != answered && ui_->interact(id_of("answer-model"), badge, false).hovered) {
                     std::array<char, 120> head{}; // on the stack: a frame under the mouse allocates nothing
-                    std::array<char, 200> line{};
                     const auto h = std::format_to_n(head.data(), head.size(), "Answered by {}, not {}", answered->short_name, chosen->short_name);
-                    const auto l = std::format_to_n(line.data(), line.size(),
-                                                    "{} doesn't see pictures: a request with one goes to {}; the others still go to {}.",
-                                                    chosen->short_name, answered->short_name, chosen->short_name);
-                    ui_->tooltip(id_of("answer-model"), badge, std::string_view{head.data(), static_cast<std::size_t>(h.out - head.data())},
-                                 std::string_view{line.data(), static_cast<std::size_t>(l.out - line.data())});
+                    const std::string_view why = m.routes.empty() ? std::string_view{"Another model than the one chosen made it."}
+                                                                  : std::string_view{m.routes.back()};
+                    ui_->tooltip(id_of("answer-model"), badge, std::string_view{head.data(), static_cast<std::size_t>(h.out - head.data())}, why);
                 }
                 cx = badge.x + badge.w + 8;
             }

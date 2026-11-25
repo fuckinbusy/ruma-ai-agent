@@ -32,6 +32,9 @@ add_library(wa_app STATIC
     sheet_handle.cpp
     picker.cpp
     sheet_menu.cpp
+    sheet_route.cpp
+    sheet_settings.cpp
+    sheet_settings_models.cpp
     tray_menu.cpp
     tray_icon.cpp
     sheet_screen.cpp
@@ -53,6 +56,8 @@ add_library(wa_app STATIC
     sizes.cpp
     space.cpp
     model_agent.cpp
+    failure.cpp
+    spend.cpp
     motion.cpp
     scene_run.cpp
     notify.cpp

@@ -48,6 +48,11 @@ inline constexpr unsigned kApiKeyId = 492;
 // Phase 12 § 6: "Rules and memory…" — the data panel's list: the user's rules (agent.md, Open in
 // its editor), each remembered entry (Forget), Forget everything (asked first).
 inline constexpr unsigned kMemoryId = 494;
+// Stage 4d-1: "Settings…" — the agent's window in its settings mode; no setting changes.
+inline constexpr unsigned kSettingsId = 495;
+// Stage 4d-2: a model switched on or off in Models (kModelOnId + its place in the catalog); the
+// chosen one stays on.
+inline constexpr unsigned kModelOnId = 480;
 // "Budget per task": its values, in the tray's menu and the picker alike.
 inline constexpr std::array<double, 3> kBudgetUsd{0.10, 0.50, 1.00};
 
@@ -56,6 +61,13 @@ inline constexpr std::array<double, 3> kBudgetUsd{0.10, 0.50, 1.00};
 // beside "Monitor" in the frame rate's list (0: not known, not said).
 auto menu(const config::Config& c, const std::optional<std::string>& live = std::nullopt, int monitor_hz = 0)
     -> std::vector<Item>;
+// Stage 4d-1: the same items laid out for the settings mode, a list per section in sheet::Section's
+// order (General, Appearance, Models, Roles, Rules and memory, Privacy, Shortcuts — 4d-2 added Models'
+// models on and off and Roles' budget); and what stays the tray's own (the model, its thinking).
+inline constexpr std::size_t kPages = 7;
+auto pages(const config::Config& c, const std::optional<std::string>& live = std::nullopt, int monitor_hz = 0)
+    -> std::array<std::vector<Item>, kPages>;
+auto tray_items(const config::Config& c) -> std::vector<Item>;
 // nullopt: not a settings item.
 auto choose(config::Config& c, unsigned id) -> std::optional<Change>;
 

@@ -6,6 +6,8 @@
 
 #include "app/events.hpp"
 #include "app/model_choice.hpp"
+#include "app/settings.hpp"
+#include "app/spend.hpp"
 #include "app/picker.hpp"
 #include "app/terminal.hpp"
 
@@ -61,7 +63,22 @@ enum class Activity : std::uint8_t {
 // What the sheet shows.
 // Rest: closed — the handle at the screen's edge, whatever goes on behind it.
 // Terminal: the detailed mode (7_chat_terminal), the conversation and plan beside the agent's terminal.
-enum class View : std::uint8_t { Rest, Input, Thinking, Answering, Done, Permission, Quick, Steps, Log, Report, Terminal };
+enum class View : std::uint8_t { Rest, Input, Thinking, Answering, Done, Permission, Quick, Steps, Log, Report, Terminal, Settings };
+
+// Stage 4d-1 (SETTINGS_SPEC): settings are a mode of the agent's own window, a section at a time.
+enum class Section : std::uint8_t { General, Appearance, Models, Roles, RulesMemory, Privacy, Shortcuts };
+struct Settings {
+    bool open = false;
+    Section section = Section::General; // the one shown, and the one the next opening shows
+    bool back_to_chat = false;          // a conversation was there: closing goes back to it
+    // What the sections show, as the shell made it from config.json (settings::pages, in Section's
+    // order), and the two lists' sets in Model::sets (0: none yet).
+    std::array<std::vector<settings::Item>, settings::kPages> pages;
+    std::uint32_t memory_set = 0, private_set = 0;
+    bool key_open = false; // stage 4d-2: Models' key field (Model::key), checked as the bar's was
+    bool key_asked = false; // its key is being checked: the verdict is Models', even if the field went
+    spend::Month spend;    // stage 4d-2: this month's spending, Models' last line (the shell keeps it)
+};
 
 // The change log's segments: today's tasks, the last seven days', all.
 enum class LogRange : std::uint8_t { Today, Week, All };
@@ -93,6 +110,9 @@ struct TaskState {
     std::vector<events::Action> done_actions;
     bool failed = false;
     std::string failed_partial; // the failed turn's words at the answer's end: Retry takes them off
+    events::Card card;          // stage 4c: the failure as its card (empty title: the plain line)
+    std::vector<std::string> routes; // stage 4c: each route once, made when it came (never in a frame)
+    std::string switched_to;    // stage 4c: asked with another model than the last request: its full name
     std::optional<events::Permission> permission; // a question waiting for the user
     std::optional<Answered> answered;             // the last one answered: its summary row in the turn
     std::vector<events::Step> steps;              // in the order they first came
@@ -150,6 +170,8 @@ struct Turn {
     std::vector<events::ActivityEntry> activity;
     std::vector<events::Picture> pictures;
     double seconds = 0; // from its question to its answer
+    std::vector<std::string> routes; // stage 4c: where its turns went instead, as said above its answer
+    std::string switched_to;         // stage 4c: the model the user changed to before it (its full name)
     bool collapsed = true;
     std::optional<events::Checklist> checklist; // its plan's last state (phase 12 § 3)
 };
@@ -282,6 +304,10 @@ struct Model : TaskState {
     // next request only, the menu's hover of a level (the orb shows it, nothing is kept).
     ModelChoice choice;
     std::optional<ModelChoice> next_only;
+    Settings settings; // stage 4d-1: the settings mode
+    ai::routing::Roles roles = ai::routing::default_roles(); // stage 4c: config.json's ai.roles
+    std::vector<std::string> disabled; // stage 4d-2: config.json's ai.disabled — not in the menu
+    std::string last_chosen; // the model chosen for the last request of this conversation
     std::optional<ModelChoice> preview;
     std::string_view previous_model; // the one chosen before (a catalog id): Ctrl+Shift+M goes back to it
     ChoiceHint choice_hint;
@@ -293,6 +319,7 @@ struct Model : TaskState {
         std::size_t active = 0;   // the one lit row, over all its groups' rows in order
         bool by_keys = false;     // lit by the keys (its ring), else by the mouse
         std::vector<picker::Group> groups; // made again when the query or a provider's state changes
+        std::optional<ai::routing::Need> role; // stage 4d-2: opened for a role of Roles (its choice is that role's)
     };
     Menu menu;
     // The last state of each provider the agent said (ProviderState), for the menu's rows.
@@ -442,9 +469,10 @@ auto working(const TaskState& t) -> bool;
 // The model and thinking level (design/ui_model). What the next request goes with: the change for
 // it alone, or the setting.
 [[nodiscard]] auto effective(const Model& m) -> ModelChoice;
-// Pro is chosen and a picture is in the input: the request goes to Flash (Pro sees no pictures).
+// Stage 4c: the next request goes to another model than the one chosen — by its role (a picture in
+// the input, High or Max thinking) — the chip shows that one with the route mark.
 [[nodiscard]] auto images_elsewhere(const Model& m) -> bool;
-// What the next request is sent with: `effective`, Flash when a picture forces it.
+// What the next request is sent with: `effective`, its role's model when that is another.
 [[nodiscard]] auto sent_with(const Model& m) -> ModelChoice;
 // The model menu (stage 4b): open on the model chosen, its search empty; closed, its search cleared.
 void open_menu(Model& m);
@@ -461,6 +489,12 @@ inline constexpr std::size_t kAnswerCosts = 80;
 // How a provider stands (the chip's dot, the menu's group): no key in the keys file, else the last
 // state the agent said of it.
 [[nodiscard]] auto provider_trouble(const Model& m, std::string_view provider) -> events::Trouble;
+
+// Stage 4c: where `model`'s pictures go, by the Images role (the menu's tooltip); null: none of
+// the role sees them (they would go as their names).
+[[nodiscard]] auto images_go_to(const Model& m, const ai::catalog::Model& model) -> const ai::catalog::Model*;
+// Stage 4c: a route as the conversation says it, from the catalog's names ("": an id it lost).
+[[nodiscard]] auto route_text(const events::Routed& r) -> std::string;
 
 auto view(const Model& m) -> View;
 auto view_name(View v) -> std::string_view; // "rest", "input", … for the debug window and the snapshot
@@ -557,7 +591,34 @@ struct Reaction {
     // the next request only goes with its Start instead.
     std::optional<ModelChoice> choose;
     std::optional<double> budget; // the picker's budget per task chosen: config.json and the agent
+    // Stage 4d-1: a settings item chosen in the settings mode — the shell applies it as the tray's.
+    std::optional<unsigned> setting;
+    // Stage 4d-2: a role's model chosen in the model menu opened for it (Roles): config.json's ai.roles.
+    struct RoleChoice {
+        ai::routing::Need need = ai::routing::Need::Hard;
+        std::string model;
+    };
+    std::optional<RoleChoice> role;
 };
+
+// Stage 4d-1: the settings mode. Opened on `section`, or the last one; closed, back to the
+// conversation if one was there before, else the window goes (its handle: Reaction::close). The
+// agent works on behind it; a question for the user comes over it and it comes back after.
+void open_settings(Model& m, std::optional<Section> section = std::nullopt);
+auto close_settings(Model& m) -> Reaction;
+void show_section(Model& m, Section s);
+// Stage 4d-2: Add key / Update key — the settings on Models with the key's field (the bar's field
+// stays for a first run with no key at all).
+void edit_key(Model& m);
+// Stage 4d-2: the model menu for a role of Roles (Hard, Images): a choice writes that role
+// (Reaction::role), not the conversation's model.
+void open_role_menu(Model& m, ai::routing::Need need);
+// ui.settings' section ids ("models", "rules_and_memory"…): the section; nullopt: none of them.
+[[nodiscard]] auto section_of(std::string_view id) -> std::optional<Section>;
+[[nodiscard]] auto section_name(Section s) -> std::string_view;
+// The Rules and memory and Privacy sections' lists, made anew by the shell (opening, a rule kept or
+// forgotten): they replace the ones before in Model::sets; the data panel is not touched.
+void settings_lists(Model& m, events::DataSet memory, events::DataSet private_windows);
 
 // A model choice made (the picker): for the next request only, or the setting (Reaction::choose).
 auto set_choice(Model& m, ModelChoice choice, bool next_only, double now) -> Reaction;

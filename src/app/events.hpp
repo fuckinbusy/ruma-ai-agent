@@ -4,6 +4,7 @@
 // events come back; both carry the task id, so an event of a task the user already stopped or
 // replaced is recognised and dropped. Plain data, moved through core::Mailbox.
 
+#include "ai/routing.hpp"
 #include "tools/image.hpp"
 #include "tools/winsys/disk.hpp"
 #include "ui/table_data.hpp"
@@ -146,10 +147,21 @@ struct Finished {
     std::string detail; // "freed 1.1 GB of RAM"
     std::vector<Action> actions;
 };
+// Stage 4c (designer's screen 06): one card for every provider's failure — what happened, what the
+// agent already did, the main action first. Its kind picks the icon and its tint.
+enum class CardKind : std::uint8_t { Error, NoKey, KeyRejected, Busy, NoAnswer, Offline, Balance };
+struct Card {
+    CardKind kind = CardKind::Error;
+    std::string tag;    // "Key rejected": small capitals above
+    std::string title;  // "DeepSeek didn't accept the key"
+    std::string detail; // under the title: the model it failed on
+    std::string body;   // what happened and what the agent did
+};
 struct Failed {
     std::string message;
     std::vector<Action> actions; // phase 7: "Retry" after the network broke, "Add key" without a key
     std::string partial;         // what the failed turn had said (the end of the answer): Retry takes it off
+    Card card;                   // stage 4c: as the conversation shows it (empty title: the message alone)
 };
 // The policy asks before a tool call (03-SECURITY): what the card shows are the facts the
 // policy decided on — its reason, the canonical paths or the full command — never the model's
@@ -417,7 +429,7 @@ struct Spent {
 // ---- phase 8: what a task found, as data for the panel, and what it ran
 
 // What a data set is, for its tab's icon and its panel's tools.
-enum class SetKind : std::uint8_t { Files, Matches, Processes, Table, Metrics, Approval, Translation, Terms, Terminal, Document, Text, Converted, Preview, Memory, Space, Threat };
+enum class SetKind : std::uint8_t { Files, Matches, Processes, Table, Metrics, Approval, Translation, Terms, Terminal, Document, Text, Converted, Preview, Memory, Space, Threat, Private };
 
 // The threat check's report as the panel draws it (phase 13a, 05b–05g): every line made when the
 // report comes, none in a frame.
@@ -607,6 +619,12 @@ struct TextTranslation {
 };
 
 // What the user might ask next, as chips under the answer (the model's ui.suggest).
+// Stage 4d-2: the model's ui.settings — the settings opened on a section (its id, as the tool says
+// it: "models", "rules_and_memory"); nothing is changed by it.
+struct OpenSettings {
+    std::string section;
+};
+
 struct Suggestions {
     std::vector<std::string> prompts; // at most 3, each at most 60 characters
 };
@@ -681,10 +699,19 @@ struct ProviderState {
     Trouble trouble = Trouble::None;
 };
 
+// Stage 4c: a turn went to another model than the one chosen (or sent pictures as words), and why:
+// the conversation says so above the answer. Ids are the catalog's.
+struct Routed {
+    std::string to, from;
+    ai::routing::Why why = ai::routing::Why::Role;
+    ai::routing::Need need = ai::routing::Need::Chat;
+    bool words_only = false;
+};
+
 using AgentEvent =
     std::variant<Thinking, Delta, Actions, Finished, Failed, Permission, Step, Summary, Progress, Quick, Report, Watching, Alert,
                  Plan, Output, Spent, Data, Activity, Conversation, Suggestions, Word, Phrase, TextTranslation, Picture,
-                 Refusal, Created, Places, Checklist, Question, JobDone, Remembered, Context, Looked, ProviderState>;
+                 Refusal, Created, Places, Checklist, Question, JobDone, Remembered, Context, Looked, ProviderState, Routed, OpenSettings>;
 
 // ---- the change log (phase 5, 5_change_log): made from changes.jsonl by journal::log_of
 

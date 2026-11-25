@@ -99,15 +99,9 @@ auto provider_of(const Model& m) noexcept -> const Provider& {
 
 auto beside(const Model& m) noexcept -> Beside {
     Beside b;
-    if (m.vision == Tri::Yes) {
-        b.vision = &m;
-    }
     for (const auto& k : kModels) {
         if (k.provider != m.provider) {
             continue;
-        }
-        if (b.vision == nullptr && k.vision == Tri::Yes) {
-            b.vision = &k;
         }
         if (b.summary == nullptr || k.prices.output < b.summary->prices.output) {
             b.summary = &k;

@@ -142,6 +142,65 @@ auto key_name(unsigned key) -> std::string {
     return std::format("0x{:02X}", key);
 }
 
+// "ai.roles" (stage 4c): each role as written, or its default when anything in it is wrong (said).
+// Chat names no model: it answers with the one chosen in the menu.
+template <class Bad>
+void read_roles(const Json& j, ai::routing::Roles& roles, const Bad& bad) {
+    if (!j.is_object()) {
+        bad("ai.roles", "expected an object");
+        return;
+    }
+    const auto known = [](const Json& v) { return v.is_string() && ai::catalog::model(v.get_string()) != nullptr; };
+    for (auto [name, role] : {std::pair{"chat", &roles.chat}, std::pair{"hard", &roles.hard}, std::pair{"images", &roles.images}}) {
+        if (!j.contains(name)) {
+            continue;
+        }
+        const Json& r = j[name];
+        const std::string key = std::format("ai.roles.{}", name);
+        if (!r.is_object()) {
+            bad(key, "expected an object");
+            continue;
+        }
+        ai::routing::Role got = *role; // a field left out keeps its default
+        if (r.contains("model")) {
+            const Json& m = r["model"];
+            if (role == &roles.chat) {
+                bad(key + ".model", "not set: Everyday chat answers with the model chosen in the menu");
+                continue;
+            }
+            if (!(m.is_string() && (m.get_string().empty() || known(m)))) {
+                bad(key + ".model", "a model's id from the catalog, or \"\" for the one chosen");
+                continue;
+            }
+            got.model = m.get_string();
+        }
+        if (r.contains("fallbacks")) {
+            const Json& f = r["fallbacks"];
+            if (!f.is_array() || !std::ranges::all_of(f.get_array(), known)) {
+                bad(key + ".fallbacks", "a list of models' ids from the catalog");
+                continue;
+            }
+            got.fallbacks.clear();
+            for (const auto& id : f.get_array()) {
+                got.fallbacks.push_back(id.get_string());
+            }
+        }
+        *role = std::move(got);
+    }
+}
+
+void write_role(Json& out, const ai::routing::Role& role, bool with_model) {
+    out = Json::object_t{};
+    if (with_model) {
+        out["model"] = role.model;
+    }
+    Json::array_t list;
+    for (const auto& id : role.fallbacks) {
+        list.emplace_back(id);
+    }
+    out["fallbacks"] = std::move(list);
+}
+
 } // namespace
 
 auto parse_hotkey(std::string_view text) -> std::optional<Hotkey> {
@@ -485,6 +544,20 @@ auto parse(std::string_view json) -> Parsed {
                     bad("ai.budget_usd", "a number of dollars above 0, up to 100");
                 }
             }
+            if (a.contains("roles")) {
+                read_roles(a["roles"], c.ai.roles, bad);
+            }
+            if (a.contains("disabled")) {
+                const Json& d = a["disabled"];
+                const auto known = [](const Json& v) { return v.is_string() && ai::catalog::model(v.get_string()) != nullptr; };
+                if (d.is_array() && std::ranges::all_of(d.get_array(), known)) {
+                    for (const auto& id : d.get_array()) {
+                        c.ai.disabled.push_back(id.get_string());
+                    }
+                } else {
+                    bad("ai.disabled", "a list of models' ids from the catalog");
+                }
+            }
         }
     }
     if (doc.contains("limits")) {
@@ -562,6 +635,20 @@ auto serialize(const Config& c) -> std::string {
     ai["model"] = c.ai.model;
     ai["thinking"] = c.ai.thinking;
     ai["budget_usd"] = c.ai.budget_usd;
+    if (!c.ai.disabled.empty() || ai.contains("disabled")) {
+        Json::array_t off;
+        for (const auto& id : c.ai.disabled) {
+            off.emplace_back(id);
+        }
+        ai["disabled"] = std::move(off);
+    }
+    if (c.ai.roles != ai::routing::default_roles() || ai.contains("roles")) { // the defaults stay out of a new file
+        Json& roles = ai["roles"];
+        roles = Json::object_t{};
+        write_role(roles["chat"], c.ai.roles.chat, false);
+        write_role(roles["hard"], c.ai.roles.hard, true);
+        write_role(roles["images"], c.ai.roles.images, true);
+    }
     Json& l = doc["limits"];
     if (!l.is_object()) {
         l = Json::object_t{};

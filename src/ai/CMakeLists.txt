@@ -19,6 +19,7 @@ add_library(wa_ai STATIC
     agent.cpp
     repeats.cpp
     compact.cpp
+    routing.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/prompt_text.cpp
 )
 find_package(glaze CONFIG REQUIRED)

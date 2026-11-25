@@ -51,6 +51,18 @@ inline constexpr std::string_view kSuggestSchema =
     R"("required":["prompts"],"additionalProperties":false})";
 auto suggestions(std::string_view args) -> std::optional<events::Suggestions>;
 
+// Stage 4d-2: the model's ui.settings — open the settings on a section when the user asks where a
+// setting is; it changes nothing. Its section, or nullopt for anything else (refused whole).
+inline constexpr std::string_view kSettings = "ui.settings";
+inline constexpr std::string_view kSettingsDescription =
+    "Open the agent's own settings on a section, only when the user asks to see or change a setting of the agent "
+    "(its theme, model, API key, roles, rules and memory, private windows, shortcuts). It changes nothing itself: "
+    "the user does. Say in one line what you opened.";
+inline constexpr std::string_view kSettingsSchema =
+    R"({"type":"object","properties":{"section":{"type":"string","enum":["general","appearance","models","roles",)"
+    R"("rules_and_memory","privacy","shortcuts"]}},"required":["section"],"additionalProperties":false})";
+auto settings_section(std::string_view args) -> std::optional<std::string>;
+
 // The model's plan.update (phase 12 § 3): its plan whole each time — at most 12 items, each a
 // title and a state; a call with more, an empty title or another state is refused whole (why).
 inline constexpr std::string_view kPlanUpdate = "plan.update";
@@ -127,7 +139,11 @@ using events::kPrivateRow;
 // each entry (Forget, its id), everything (Forget all, -1) when anything is remembered; then
 // PRIVATE WINDOWS (phase 13a): the built-in signs, always on (no action, -2), and the user's rules
 // (Forget, kPrivateRow + id).
-auto memory_set(std::span<const memory::Entry> entries, std::span<const tools::winsys::PrivateRule> rules = {}) -> events::DataSet;
+auto memory_set(std::span<const memory::Entry> entries, std::span<const tools::winsys::PrivateRule> rules = {},
+                bool private_windows = true) -> events::DataSet;
+// Stage 4d-1: the settings' Privacy list — the private windows alone (the built-in signs, the user's
+// to forget), its field to add one over it (SetKind::Private).
+auto private_set(std::span<const tools::winsys::PrivateRule> rules) -> events::DataSet;
 
 // {"job":1,"command":"...","running":true,...,"output":"...","next":N}.
 auto job_json(const tools::jobs::State& s) -> std::string;

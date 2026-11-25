@@ -58,7 +58,7 @@ auto state_of(std::string_view provider, std::span<const events::ProviderState> 
 } // namespace
 
 auto groups(std::string_view query, std::span<const events::ProviderState> states, std::span<const ai::catalog::Provider> providers,
-            std::span<const ai::catalog::Model> models) -> std::vector<Group> {
+            std::span<const ai::catalog::Model> models, std::span<const std::string> disabled) -> std::vector<Group> {
     std::vector<Group> out;
     std::vector<Group> keyless; // providers without a key: at the end
     for (const auto& p : providers) {
@@ -73,7 +73,7 @@ auto groups(std::string_view query, std::span<const events::ProviderState> state
         const int by_provider = std::max(rank(find(p.name, query)), rank(find(p.monogram, query)));
         std::vector<std::pair<int, Row>> ranked;
         for (const auto& m : models) {
-            if (m.provider != p.id) {
+            if (m.provider != p.id || std::ranges::find(disabled, m.id) != disabled.end()) {
                 continue;
             }
             ++g.total;
@@ -106,8 +106,9 @@ auto groups(std::string_view query, std::span<const events::ProviderState> state
     return out;
 }
 
-auto groups(std::string_view query, std::span<const events::ProviderState> states) -> std::vector<Group> {
-    return groups(query, states, ai::catalog::providers(), ai::catalog::models());
+auto groups(std::string_view query, std::span<const events::ProviderState> states, std::span<const std::string> disabled)
+    -> std::vector<Group> {
+    return groups(query, states, ai::catalog::providers(), ai::catalog::models(), disabled);
 }
 
 auto status_text(const Group& g, bool searching, std::span<char> buf) -> std::string_view {

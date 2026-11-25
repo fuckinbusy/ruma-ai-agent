@@ -154,7 +154,7 @@ auto Painter::update(const Model& m, double now) -> Shape {
         ::theme::progress(anim_.to(kThemeTrack, 1.0f, ui::motion::kQuick));
     }
     wants_theme_frame_ = false;
-    Shape target = conversation ? conversation_shape(m) : shape_of(v, room_);
+    Shape target = conversation ? conversation_shape(m) : v == View::Settings ? settings_shape(m) : shape_of(v, room_);
     const bool was_conversation = conv_shown_;
     conv_shown_ = conversation;
     if (strip_wanted(m, v)) { // the background's strip under the content, still never past the monitor
@@ -475,6 +475,7 @@ auto Painter::handle_shape() const -> Shape {
 }
 
 void Painter::draw_handle(const Model& m, const Box& zone, float opacity) {
+    opacity *= paused_ ? 0.3f : 1.0f; // stage 4d-2: paused, the sign fades to 30 % (SETTINGS_SPEC § 5)
     const auto sf = sign_.frame();
     const Presence says = presence_of(m);
     const auto& st = *sign_theme_;
@@ -714,6 +715,10 @@ auto Painter::take_escape() -> bool {
         menu_open_ = false;
         return true;
     }
+    if (settings_open_item_ >= 0) { // a settings item's list (stage 4d-1): it goes before the settings
+        settings_open_item_ = -1;
+        return true;
+    }
     if (ui_->selection().active()) {
         ui_->clear_selection();
         return true;
@@ -910,7 +915,12 @@ void Painter::draw_moving(Model& m, const Box& panel, float radius, bool changed
         renderer.set_opacity(base);
         draw_model_hint(m, glass);
         renderer.set_opacity(base);
-        draw_menu(m, glass.y + dy + above, panel.x + panel.w, r); // over all of the frame (stage 4b)
+        if (v == View::Settings) { // under the role's own model (Roles, stage 4d-2)
+            const auto& b = settings_role_boxes_[!m.menu.role ? 0 : *m.menu.role == ai::routing::Need::Hard ? 1 : 2];
+            draw_menu(m, b.y + b.h - row_h_, b.x + b.w + 18, r);
+        } else {
+            draw_menu(m, glass.y + dy + above, panel.x + panel.w, r); // over all of the frame (stage 4b)
+        }
     }
     // Files over the window (the shell's drop target): over all of it; in and out on quick (MS § 7).
     if (const float zone = anim_.to(kDropZoneTrack, m.drag_over && !closing ? 1.0f : 0.0f, ui::motion::kQuick); zone > 0.001f && !closing) {
@@ -940,6 +950,7 @@ void Painter::draw_layer(View v, Model& m, const Box& panel, Reaction& r) {
     case View::Log: draw_log(m, panel, r); break;
     case View::Report: draw_report(m, panel, r); break;
     case View::Terminal: draw_terminal(m, panel, r); break;
+    case View::Settings: draw_settings(m, panel, r); break;
     case View::Rest: break;
     }
 }
@@ -2258,10 +2269,16 @@ void Painter::draw_input(Model& m, const Box& panel, Reaction& r) {
         const bool refused = !m.key_error.empty();
         std::array<RowChip, 1> chip{{{refused ? "Not kept" : m.key_checking ? "Checking" : "API key",
                                       refused ? work::Tone::Crit : work::Tone::Accent, "key"}}};
-        key_line_ = m.key_checking ? std::string_view{"Checking the key with DeepSeek\xE2\x80\xA6"}
+        if (key_texts_[0].empty()) { // once: the provider's name from the catalog (stage 4d-2)
+            const auto& p = ai::catalog::default_provider();
+            key_texts_ = {std::format("Checking the key with {}\xE2\x80\xA6", p.name),
+                          std::format("Paste your {} API key \xE2\x80\x94 Enter checks it, Esc cancels", p.name),
+                          std::format("Paste your {} API key \xE2\x80\x94 Enter checks it", p.name)};
+        }
+        key_line_ = m.key_checking ? std::string_view{key_texts_[0]}
                     : refused      ? std::string_view{m.key_error}
-                    : m.has_key    ? std::string_view{"Paste your DeepSeek API key \xE2\x80\x94 Enter checks it, Esc cancels"}
-                                   : std::string_view{"Paste your DeepSeek API key \xE2\x80\x94 Enter checks it"};
+                    : m.has_key    ? std::string_view{key_texts_[1]}
+                                   : std::string_view{key_texts_[2]};
         draw_row(m, panel, r, key_line_, wt::type::placeholder, std::span{chip.data(), 1u}, RowButton::Send, false);
         return;
     }

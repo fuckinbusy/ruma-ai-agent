@@ -130,8 +130,9 @@ void Painter::draw_menu(Model& m, float row_top, float right, Reaction& r) {
     }
     menu_alpha_ = alpha;
     // A press outside it closes it (§ 9); the chip and the orb toggle it themselves.
+    const bool on_role = std::ranges::any_of(settings_role_boxes_, [&](const Box& b) { return inside(b, in.mouse_x, in.mouse_y); });
     if (open && in.mouse_pressed && !inside(menu_box_, in.mouse_x, in.mouse_y) && !inside(model_chip_.box, in.mouse_x, in.mouse_y) &&
-        !inside(orb_controls_, in.mouse_x, in.mouse_y)) {
+        !inside(orb_controls_, in.mouse_x, in.mouse_y) && !on_role) { // a role's box toggles it itself (4d-2)
         close_menu(m);
         return;
     }
@@ -461,7 +462,7 @@ void Painter::draw_menu_tip(const Model& m, const ai::catalog::Model& model, con
     }
     std::array<char, 128> instead{};
     if (model.vision == ai::catalog::Tri::No) {
-        const auto* to = ai::catalog::beside(model).vision;
+        const auto* to = images_go_to(m, model); // its Images role's (stage 4c)
         lines[n++] = to != nullptr ? Line{said(instead, std::format_to_n(instead.data(), static_cast<std::ptrdiff_t>(instead.size()),
                                                                         "Can't see images \xE2\x86\x92 they go to {}", to->full_name)),
                                           Face::Text, ui::th().warn, 0}

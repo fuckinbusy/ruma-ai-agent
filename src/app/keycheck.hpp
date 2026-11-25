@@ -23,8 +23,8 @@ struct Result {
 // "sk-" and at least 20 ASCII letters and digits: DeepSeek's keys are "sk-" and 32 hex digits.
 [[nodiscard]] auto looks_right(std::string_view key) -> bool;
 
-// The message a key of the wrong form gets.
-inline constexpr std::string_view kWrongForm = "That isn't a DeepSeek API key \xE2\x80\x94 it starts with sk-"; // provider-ok: the key's row is rebuilt per provider in stage 4d
+// The message a key of the wrong form gets, for the provider it is meant for (its name, its form).
+[[nodiscard]] auto wrong_form(const ai::catalog::Provider& p) -> std::string;
 
 // GET <host>/models with the key as a bearer, through the agent's proxy setting (config.json's
 // network.proxy). Blocks up to ~15 s: call it from a thread of its own, never the UI's.

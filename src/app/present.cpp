@@ -894,23 +894,61 @@ auto reply_json(const events::Reply& r) -> std::string {
     return out + R"(],"other":)" + quoted(r.other) + "}";
 }
 
-auto memory_set(std::span<const memory::Entry> entries, std::span<const tools::winsys::PrivateRule> rules) -> events::DataSet {
+namespace {
+
+// A list of what / date / action (Rules and memory, the private windows): its rows added by `row`.
+auto listed(std::string title, std::string source, events::SetKind kind) -> events::DataSet {
     events::DataSet s{.id = ++g_last_set,
-                      .title = "Rules and memory",
-                      .source = "memory.json",
+                      .title = std::move(title),
+                      .source = std::move(source),
                       .location = {},
                       .columns = {{"What", ui::work::ColumnKind::Text, 0, true, false},
                                   {"Date", ui::work::ColumnKind::Text, 104, false, false},
                                   {"", ui::work::ColumnKind::Action, 96, false, false}},
                       .complete = true,
-                      .kind = events::SetKind::Memory};
+                      .kind = kind};
     s.rows.columns = 3;
-    const auto row = [&](std::string what, std::string date, std::string action, double id) {
-        s.rows.cells.push_back({std::move(what), 0});
-        s.rows.cells.push_back({std::move(date), 0});
-        s.rows.cells.push_back({std::move(action), id});
+    return s;
+}
+
+void row(events::DataSet& s, std::string what, std::string date, std::string action, double id) {
+    s.rows.cells.push_back({std::move(what), 0});
+    s.rows.cells.push_back({std::move(date), 0});
+    s.rows.cells.push_back({std::move(action), id});
+}
+
+// Phase 13a § 2.1: the windows the agent never looks at — its own signs, then the user's, in `group`.
+void private_rows(events::DataSet& s, std::span<const tools::winsys::PrivateRule> rules, std::uint32_t group) {
+    for (const char* sign : {"Password managers", "Windows' sign-in and permission windows", "Private browser windows",
+                             "Windows that keep themselves out of captures", "Windows with a password field in focus",
+                             "Windows whose title looks like a bank's"}) {
+        row(s, sign, "always on", {}, -2);
+        s.rows.group.push_back(group);
+    }
+    for (const auto& r : rules) {
+        row(s, tools::winsys::describe(r), r.date, "Forget", kPrivateRow + static_cast<double>(r.id));
+        s.rows.group.push_back(group);
+    }
+}
+
+} // namespace
+
+auto private_set(std::span<const tools::winsys::PrivateRule> rules) -> events::DataSet {
+    auto s = listed("Private windows", "private.json", events::SetKind::Private);
+    private_rows(s, rules, 0);
+    s.footer = rules.empty() ? std::string{"None of your own yet"} : std::format("{} of your own", rules.size());
+    return s;
+}
+
+auto memory_set(std::span<const memory::Entry> entries, std::span<const tools::winsys::PrivateRule> rules, bool private_windows)
+    -> events::DataSet {
+    auto s = listed("Rules and memory", "memory.json", events::SetKind::Memory);
+    const auto row = [&s](std::string what, std::string date, std::string action, double id) {
+        present::row(s, std::move(what), std::move(date), std::move(action), id);
     };
-    s.rows.group_titles = {"", "PRIVATE WINDOWS"};
+    if (private_windows) {
+        s.rows.group_titles = {"", "PRIVATE WINDOWS"};
+    }
     row("Your rules (agent.md)", {}, "Open", 0);
     for (const auto& e : entries) {
         row(e.text, e.date, "Forget", static_cast<double>(e.id));
@@ -919,16 +957,8 @@ auto memory_set(std::span<const memory::Entry> entries, std::span<const tools::w
         row("Everything remembered", {}, "Forget all", -1);
     }
     s.rows.group.assign(s.rows.rows(), 0);
-    // Phase 13a § 2.1: the windows the agent never looks at — its own signs, then the user's.
-    for (const char* sign : {"Password managers", "Windows' sign-in and permission windows", "Private browser windows",
-                             "Windows that keep themselves out of captures", "Windows with a password field in focus",
-                             "Windows whose title looks like a bank's"}) {
-        row(sign, "always on", {}, -2);
-        s.rows.group.push_back(1);
-    }
-    for (const auto& r : rules) {
-        row(tools::winsys::describe(r), r.date, "Forget", kPrivateRow + static_cast<double>(r.id));
-        s.rows.group.push_back(1);
+    if (private_windows) {
+        private_rows(s, rules, 1);
     }
     s.footer = entries.empty() ? std::string{"Nothing remembered yet"}
                                : std::format("{} remembered \xC2\xB7 at most {}", entries.size(), memory::kMaxEntries);
@@ -943,6 +973,20 @@ auto job_json(const tools::jobs::State& s) -> std::string {
     return std::format(R"({{"job":{},"command":{},"running":{},"code":{},"timed_out":{},"stopped":{},"cut":{},"output":{},"next":{}}})",
                        s.id, quoted(s.command), s.running, s.running ? std::string{"null"} : std::to_string(s.code), s.timed_out,
                        s.stopped, s.cut, quoted(s.output), s.next);
+}
+
+auto settings_section(std::string_view args) -> std::optional<std::string> {
+    const auto j = parsed(args);
+    if (!j || !j->is_object() || j->get_object().size() != 1 || !j->contains("section") || !(*j)["section"].is_string()) {
+        return std::nullopt; // the section alone: the tool opens, it never sets anything
+    }
+    const auto& s = (*j)["section"].get_string();
+    for (const auto known : {"general", "appearance", "models", "roles", "rules_and_memory", "privacy", "shortcuts"}) {
+        if (s == known) {
+            return s;
+        }
+    }
+    return std::nullopt;
 }
 
 auto suggestions(std::string_view args) -> std::optional<events::Suggestions> {
@@ -1176,7 +1220,7 @@ auto copied_text(const events::TextTranslation& t) -> std::string {
 }
 
 auto shows(std::string_view tool) -> bool {
-    return tool == kSuggest || tool == kShowWord || tool == kShowPhrase || tool == kShowText || tool == kPlanUpdate || tool == kAsk ||
+    return tool == kSuggest || tool == kSettings || tool == kShowWord || tool == kShowPhrase || tool == kShowText || tool == kPlanUpdate || tool == kAsk ||
            tool == kShellJob || tool == kShellStop || tool == kMemoryAdd || tool == kMemoryForget;
 }
 

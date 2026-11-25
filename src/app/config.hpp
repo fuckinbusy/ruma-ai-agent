@@ -6,6 +6,7 @@
 // safety default off. The old agent.ini (phase 3) is migrated once by migrate().
 
 #include "ai/catalog.hpp"
+#include "ai/routing.hpp"
 #include "core/error.hpp"
 #include "theme/system.hpp"
 
@@ -61,6 +62,11 @@ struct Ai {
     std::string model{ai::catalog::default_model().id}; // a model's id in ai::catalog
     std::string thinking = "low";
     double budget_usd = 0.10;
+    // Stage 4c: which model each kind of request goes to. "ai.roles"; not written while default.
+    ai::routing::Roles roles = ai::routing::default_roles();
+    // Stage 4d-2: the models switched off in Models (not in the menu, the tray, the roles' chains).
+    // "ai.disabled"; a new model of the catalog comes in switched on. Not written while empty.
+    std::vector<std::string> disabled;
 };
 
 // The animations' frame rate (motion rework; chosen, not 60 for good): the

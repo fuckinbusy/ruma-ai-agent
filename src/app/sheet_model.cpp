@@ -106,6 +106,7 @@ auto trimmed(std::string_view s) -> std::string {
 // What a task shows of its work: gone when a new one starts in its place.
 void clear_work(TaskState& t) {
     t.steps.clear();
+    t.routes.clear();
     t.summary.reset();
     t.progress = -1;
     t.quick.reset();
@@ -154,6 +155,8 @@ void archive(Model& m) {
                                              .activity = std::move(m.activity_log),
                                              .pictures = std::move(m.pictures),
                                              .seconds = std::max(0.0, end - m.started_at),
+                                             .routes = std::move(m.routes),
+                                             .switched_to = std::move(m.switched_to),
                                              .collapsed = true,
                                              .checklist = std::move(m.checklist)});
     m.checklist.reset();
@@ -463,19 +466,84 @@ auto effective(const Model& m) -> ModelChoice {
     return m.next_only.value_or(m.choice);
 }
 
-// A picture in the input and a model that does not see: the request goes to one of its provider that does.
+auto route_text(const events::Routed& r) -> std::string {
+    const auto* to = ai::catalog::model(r.to);
+    const auto* from = ai::catalog::model(r.from);
+    if (to == nullptr || from == nullptr) {
+        return {};
+    }
+    const auto& p = ai::catalog::provider_of(*from);
+    const std::string_view role = r.need == ai::routing::Need::Images ? "Images" : "Hard problems";
+    using W = ai::routing::Why;
+    if (r.words_only) {
+        // Names only: none of the role sees, or the one that does failed — then that is the reason.
+        switch (r.why) {
+        case W::Busy: return std::format("{} is busy, so {} got the pictures' names only.", from->short_name, to->full_name);
+        case W::NoAnswer: return std::format("{} didn't answer, so {} got the pictures' names only.", from->short_name, to->full_name);
+        case W::KeyRejected: return std::format("{} didn't accept the key, so {} got the pictures' names only.", p.name, to->full_name);
+        case W::NoKey: return std::format("{} has no key here, so {} got the pictures' names only.", p.name, to->full_name);
+        case W::Offline: return std::format("{} can't be reached, so {} got the pictures' names only.", p.name, to->full_name);
+        default: return std::format("No model in your Images role sees pictures, so {} got their names only.", to->full_name);
+        }
+    }
+    switch (r.why) {
+    case W::Role:
+        return std::format("{} to {} \xE2\x80\x94 your {} role.", r.need == ai::routing::Need::Images ? "Pictures go" : "High thinking goes",
+                           to->full_name, role);
+    case W::NoVision: return std::format("{} can't see images, so this one went to {} \xE2\x80\x94 your Images role.", from->short_name, to->full_name);
+    case W::NoThinking:
+        return std::format("{} can't think, so this one went to {} \xE2\x80\x94 your Hard problems role.", from->short_name, to->full_name);
+    case W::Busy: return std::format("{} is busy, so this one went to {}.", from->short_name, to->full_name);
+    case W::NoAnswer: return std::format("{} didn't answer, so this one went to {}.", from->short_name, to->full_name);
+    case W::KeyRejected: return std::format("{} didn't accept the key, so this one went to {}.", p.name, to->full_name);
+    case W::NoKey: return std::format("{} has no key here, so this one went to {}.", p.name, to->full_name);
+    case W::Offline: return std::format("{} can't be reached, so this one went to {}.", p.name, to->full_name);
+    }
+    return {};
+}
+
+// Stage 4c: where a request with these pictures and this choice goes, as the loop would pick it
+// when nothing has failed: its role's first model that can do what is needed, else Chat's first.
+auto routed_to(const Model& m, const ModelChoice& c, bool picture) -> const ai::catalog::Model& {
+    // Walked in place, as routing::chain orders it: the chip asks every frame, so no list is made.
+    const auto& chosen = model_of(c);
+    const auto need = ai::routing::need_of(picture, static_cast<ai::Thinking>(c.level));
+    const auto can = [need](const ai::catalog::Model& x) {
+        return need == ai::routing::Need::Images ? x.vision == ai::catalog::Tri::Yes
+               : need == ai::routing::Need::Hard ? x.thinking == ai::catalog::Tri::Yes
+                                                 : true;
+    };
+    const auto& role = need == ai::routing::Need::Images ? m.roles.images : need == ai::routing::Need::Hard ? m.roles.hard : m.roles.chat;
+    const ai::catalog::Model* first = need == ai::routing::Need::Chat || role.model.empty() ? nullptr : ai::catalog::model(role.model);
+    if (const auto& lead = first != nullptr ? *first : chosen; can(lead)) {
+        return lead;
+    }
+    for (const auto& id : role.fallbacks) {
+        if (const auto* x = ai::catalog::model(id); x != nullptr && can(*x)) {
+            return *x;
+        }
+    }
+    return chosen;
+}
+
+auto images_go_to(const Model& m, const ai::catalog::Model& model) -> const ai::catalog::Model* {
+    const auto& to = routed_to(m, ModelChoice{.model = model.id, .level = 1}, true);
+    return to.vision == ai::catalog::Tri::Yes ? &to : nullptr;
+}
+
+auto picture_in(const Model& m) -> bool {
+    return std::ranges::any_of(m.attachments, [](const Attachment& a) { return a.image.has_value() && a.refused.empty(); });
+}
+
+// The next request goes to another model than the one chosen (by its role).
 auto images_elsewhere(const Model& m) -> bool {
-    const auto& chosen = model_of(effective(m));
-    const auto* sees = ai::catalog::beside(chosen).vision;
-    return chosen.vision != ai::catalog::Tri::Yes && sees != nullptr &&
-           std::ranges::any_of(m.attachments, [](const Attachment& a) { return a.image.has_value() && a.refused.empty(); });
+    const auto c = effective(m);
+    return &routed_to(m, c, picture_in(m)) != &model_of(c);
 }
 
 auto sent_with(const Model& m) -> ModelChoice {
     ModelChoice c = effective(m);
-    if (images_elsewhere(m)) {
-        c.model = ai::catalog::beside(model_of(c)).vision->id;
-    }
+    c.model = routed_to(m, c, picture_in(m)).id;
     return c;
 }
 
@@ -562,7 +630,7 @@ void regroup(Model& m) {
     if (!m.has_key) {
         states.push_back({std::string{ai::catalog::default_provider().id}, events::Trouble::NoKey});
     }
-    m.menu.groups = picker::groups(m.menu.query.text, states);
+    m.menu.groups = picker::groups(m.menu.query.text, states, m.disabled);
 }
 
 } // namespace
@@ -586,6 +654,7 @@ void open_menu(Model& m) {
 
 void close_menu(Model& m) {
     m.menu.open = false; // its groups stay: it fades out with them (made again when it opens)
+    m.menu.role.reset();
     m.menu.query = {};
     m.preview.reset();
 }
@@ -643,10 +712,16 @@ auto pick(Model& m, std::size_t i, bool once) -> Reaction {
     if (row == nullptr) {
         return {};
     }
-    if (row->dimmed && !row->action.empty()) { // Add key, Update key: the key's field (the settings' in 4d)
+    if (row->dimmed && !row->action.empty()) { // Add key, Update key: Models with the key's field (4d-2)
         close_menu(m);
-        ask_key(m);
+        edit_key(m);
         return {};
+    }
+    if (m.menu.role) { // opened for a role of Roles (4d-2): that role's model, the conversation's as it was
+        Reaction r;
+        r.role = Reaction::RoleChoice{.need = *m.menu.role, .model = std::string{row->model->id}};
+        close_menu(m);
+        return r;
     }
     // Offline rows are dimmed but chosen as any (review M6): the network may be back by the next
     // request. A lasting choice keeps the setting's level, a one-off the one-off's (review M7).
@@ -654,6 +729,82 @@ auto pick(Model& m, std::size_t i, bool once) -> Reaction {
     c.model = row->model->id;
     close_menu(m);
     return set_choice(m, c, once, m.now);
+}
+
+void open_settings(Model& m, std::optional<Section> section) {
+    if (!m.settings.open) { // where closing goes back to: the window as it was, or a conversation behind the handle
+        m.settings.back_to_chat = m.open || m.task != 0 || !m.session.empty();
+    }
+    m.settings.open = true; // the window itself: the shell's open_sheet (its styles, focus, monitor)
+    close_menu(m);          // never left anchored somewhere else (final review M1)
+    if (section) {
+        m.settings.section = *section;
+    }
+}
+
+auto close_settings(Model& m) -> Reaction {
+    Reaction r;
+    m.settings.open = false;
+    if (m.settings.key_open) { // a key half typed: wiped, not kept for the next opening (final review M6)
+        std::ranges::fill(m.key.text, '\0');
+        m.key = {};
+        m.settings.key_open = false;
+    }
+    r.close = !m.settings.back_to_chat; // opened from the tray with nothing behind: the window goes
+    return r;
+}
+
+void settings_lists(Model& m, events::DataSet memory, events::DataSet private_windows) {
+    std::erase_if(m.sets, [&](const events::DataSet& s) { return s.id == m.settings.memory_set || s.id == m.settings.private_set; });
+    m.settings.memory_set = memory.id;
+    m.settings.private_set = private_windows.id;
+    m.sets.push_back(std::move(memory));
+    m.sets.push_back(std::move(private_windows));
+}
+
+void open_role_menu(Model& m, ai::routing::Need need) {
+    open_menu(m);
+    if (m.menu.open) {
+        m.menu.role = need;
+    }
+}
+
+auto section_of(std::string_view id) -> std::optional<Section> {
+    constexpr std::array<std::pair<std::string_view, Section>, 7> kIds{{{"general", Section::General},
+                                                                        {"appearance", Section::Appearance},
+                                                                        {"models", Section::Models},
+                                                                        {"roles", Section::Roles},
+                                                                        {"rules_and_memory", Section::RulesMemory},
+                                                                        {"privacy", Section::Privacy},
+                                                                        {"shortcuts", Section::Shortcuts}}};
+    const auto it = std::ranges::find(kIds, id, &std::pair<std::string_view, Section>::first);
+    return it == kIds.end() ? std::nullopt : std::optional<Section>{it->second};
+}
+
+void edit_key(Model& m) {
+    close_menu(m);
+    open_settings(m, Section::Models);
+    m.settings.key_open = true;
+    m.key = {};
+    m.key_entered.reset();
+    m.key_error.clear();
+}
+
+void show_section(Model& m, Section s) {
+    m.settings.section = s;
+}
+
+auto section_name(Section s) -> std::string_view {
+    switch (s) {
+    case Section::General: return "General";
+    case Section::Appearance: return "Appearance";
+    case Section::Models: return "Models";
+    case Section::Roles: return "Roles";
+    case Section::RulesMemory: return "Rules and memory";
+    case Section::Privacy: return "Privacy";
+    case Section::Shortcuts: return "Shortcuts";
+    }
+    return {};
 }
 
 auto view(const Model& m) -> View {
@@ -665,6 +816,9 @@ auto view(const Model& m) -> View {
     }
     if (m.permission) {
         return View::Permission;
+    }
+    if (m.settings.open) {
+        return View::Settings; // the agent works on behind it (stage 4d-1)
     }
     if (m.log && m.activity == Activity::Idle) {
         return View::Log;
@@ -703,6 +857,7 @@ auto view_name(View v) -> std::string_view {
     case View::Log: return "log";
     case View::Report: return "report";
     case View::Terminal: return "terminal";
+    case View::Settings: return "settings";
     }
     return "?";
 }
@@ -745,6 +900,8 @@ void open(Model& m) {
 
 void close(Model& m) {
     m.open = false;
+    m.settings.open = false;
+    m.settings.key_open = false; // closed any way (a tray click, Alt+F4): the next opening is not the settings
     close_menu(m); // it goes with the sheet, its preview forgotten
     // A task at work (or asking) goes on behind the handle; the sheet opens on it again.
     if (m.task != 0 && (working(m) || m.permission)) {
@@ -784,6 +941,14 @@ void type(Model& m, std::string_view text) {
     if (m.private_focus) {
         insert(m.private_add, text); // Private windows' own field (phase 13a)
         return;
+    }
+    if (m.settings.key_open && view(m) == View::Settings) {
+        insert(m.key, text); // Models' key field (4d-2)
+        m.key_error.clear();
+        return;
+    }
+    if (view(m) == View::Settings) {
+        return; // stage 4d-1: nothing behind the settings takes words (final review I3)
     }
     if (m.permission) {
         insert(m.input, text, true); // a new request (it replaces the asking task), or the advanced word
@@ -851,6 +1016,7 @@ void dismiss(Model& m) {
     m.done_detail.clear();
     m.done_actions.clear();
     m.failed = false;
+    m.card = {};
 }
 
 void ask_key(Model& m) {
@@ -891,7 +1057,8 @@ void mask_into(const Edit& e, Edit& out) {
 }
 
 void key_rejected(Model& m, std::string_view why) {
-    m.key_mode = true;
+    m.key_mode = !m.settings.key_asked; // Models' says it in its card (4d-2)
+    m.settings.key_asked = false;
     m.key_checking = false;
     m.key_error = std::string{why};
 }
@@ -908,10 +1075,16 @@ void key_saved(Model& m, bool ok, std::string_view error) {
     m.key_error.clear();
     m.key_mode = false;
     m.key = {};
+    if (std::exchange(m.settings.key_asked, false)) { // from Models (4d-2): the card says it; the conversation as it was
+        m.settings.key_open = m.settings.key_open && !ok;
+        m.key_error = ok ? std::string{} : std::string{error};
+        return;
+    }
     m.input = {};
     m.activity = Activity::Done;
     m.streaming = false;
     m.failed = !ok;
+    m.card = {}; // the key's card is answered: its result is the plain line (final review 2)
     m.done_title = ok ? "Key saved" : "The key could not be saved";
     m.done_detail = ok ? std::string{"encrypted for this Windows user"} : std::string{error};
     m.done_actions.clear();
@@ -930,22 +1103,23 @@ auto submit(Model& m) -> std::optional<events::Command> {
     if (m.query && m.answering_other) { // the question's own answer, from Send (phase 12 § 4)
         return refine(m);
     }
-    if (m.key_mode) {
-        // The key to the shell for DeepSeek to check, and out of the sheet's memory; the field waits
-        // for the verdict (key_saved, key_rejected). Empty, or a check under way: nothing. Not a
-        // DeepSeek key at all ("jdasfd;lajsdf"): said at once, nothing sent anywhere.
+    if (m.key_mode || (m.settings.key_open && view(m) == View::Settings)) {
+        // The key to the shell for its provider to check, and out of the sheet's memory; the field
+        // waits for the verdict (key_saved, key_rejected). Empty, or a check under way: nothing. Not a
+        // key of the provider's form at all ("jdasfd;lajsdf"): said at once, nothing sent anywhere.
         std::string key = trimmed(m.key.text);
         if (key.empty() || m.key_checking) {
             return std::nullopt;
         }
         if (!keycheck::looks_right(key)) {
-            m.key_error = std::string{keycheck::kWrongForm};
+            m.key_error = keycheck::wrong_form(ai::catalog::default_provider());
             m.key = {}; // the row shows why in the empty field; a paste tries again
             return std::nullopt;
         }
         m.key_entered = std::move(key);
         m.key = {};
         m.key_checking = true;
+        m.settings.key_asked = !m.key_mode; // from Models' field: its verdict is Models' (final review I3)
         m.key_error.clear();
         return std::nullopt;
     }
@@ -1035,6 +1209,7 @@ auto submit(Model& m) -> std::optional<events::Command> {
     m.done_detail.clear();
     m.done_actions.clear();
     m.failed = false;
+    m.card = {};
     clear_work(m);
     for (const auto& image : images) { // the turn shows what the model was shown
         m.pictures.push_back(events::picture_of(image));
@@ -1047,10 +1222,15 @@ auto submit(Model& m) -> std::optional<events::Command> {
         start.model = std::string{once->model};
         start.thinking = std::string{thinking_id(once->level)};
     }
-    // The model it goes to: the chosen one, or — with pictures and a model that does not see — one that does.
-    const auto& asked = model_of(once ? *once : m.choice);
-    const auto* sees = ai::catalog::beside(asked).vision;
-    m.asked_model = !start.images.empty() && asked.vision != ai::catalog::Tri::Yes && sees != nullptr ? sees->id : asked.id;
+    // The model it goes to: its role's (stage 4c) — the chosen one, or one that sees its pictures.
+    const ModelChoice used = once ? *once : m.choice;
+    m.asked_model = routed_to(m, used, !start.images.empty()).id;
+    // A request on another model than the last one of this conversation: the divider says so.
+    m.switched_to.clear();
+    if (!fresh && !m.last_chosen.empty() && m.last_chosen != used.model) {
+        m.switched_to = std::string{model_of(used).full_name};
+    }
+    m.last_chosen = std::string{used.model};
     return start;
 }
 
@@ -1112,7 +1292,7 @@ auto paste(Model& m, std::string_view text, double now) -> bool {
         type(m, text);
         return false;
     }
-    if (m.key_mode) {
+    if (m.key_mode || (m.settings.key_open && view(m) == View::Settings)) { // Models' key field too (4d-2 review I1)
         type(m, text);
         return false;
     }
@@ -1329,7 +1509,7 @@ auto press(Model& m, std::string_view action) -> std::optional<events::Command> 
         return std::ranges::any_of(list, [&](const events::Action& a) { return a.id == action; });
     };
     if (action == "set_key" && (offered(m.done_actions) || offered(m.actions))) {
-        ask_key(m); // the sheet's own: nothing for the agent
+        edit_key(m); // the settings' Models with the key's field (stage 4d-2); nothing for the agent
         return std::nullopt;
     }
     const bool quick = m.quick && m.quick->action && m.quick->action->id == action;
@@ -1403,6 +1583,7 @@ auto press(Model& m, std::string_view action) -> std::optional<events::Command> 
             m.answer.resize(m.answer.size() - m.failed_partial.size());
         }
         m.failed = false;
+        m.card = {};
         m.failed_partial.clear();
         m.done_title.clear();
         m.done_detail.clear();
@@ -1422,6 +1603,9 @@ void apply(Model& model, const events::Event& e) {
             model.answer_costs.erase(model.answer_costs.begin());
         }
         model.answer_costs.push_back({s->model, s->usd});
+    }
+    if (std::holds_alternative<events::OpenSettings>(e.event)) {
+        return; // the model's ui.settings: the shell opens them, for the task in front (final review M4)
     }
     if (const auto* s = std::get_if<events::ProviderState>(&e.event)) { // the menu's rows (stage 4b)
         auto it = std::ranges::find(model.providers, s->provider, &events::ProviderState::provider);
@@ -1603,6 +1787,7 @@ void apply(Model& model, const events::Event& e) {
                 m.done_detail = ev.detail;
                 m.done_actions = ev.actions;
                 m.failed = false;
+                m.card = {};
                 m.activity = Activity::Done;
                 settle_steps(m.steps, events::StepState::Done);
             } else if constexpr (std::is_same_v<T, events::Failed>) {
@@ -1614,6 +1799,7 @@ void apply(Model& model, const events::Event& e) {
                 m.done_actions = ev.actions;
                 m.failed = true;
                 m.failed_partial = ev.partial;
+                m.card = ev.card;
                 m.activity = Activity::Done;
                 settle_steps(m.steps, events::StepState::Failed);
             } else if constexpr (std::is_same_v<T, events::Step>) {
@@ -1651,6 +1837,10 @@ void apply(Model& model, const events::Event& e) {
                 m.remembered.push_back(ev);
             } else if constexpr (std::is_same_v<T, events::Looked>) {
                 m.looked.push_back(ev);
+            } else if constexpr (std::is_same_v<T, events::Routed>) {
+                if (auto said = route_text(ev); !said.empty() && std::ranges::find(m.routes, said) == m.routes.end()) {
+                    m.routes.push_back(std::move(said));
+                }
             } else if constexpr (std::is_same_v<T, events::Question>) {
                 m.query = ev; // the task waits for the reply, like a permission
                 m.streaming = false;
@@ -1851,7 +2041,7 @@ auto forget_remembered(Model& m, std::uint64_t id, bool private_window) -> std::
 }
 
 void show_memory(Model& m, events::DataSet set) {
-    std::erase_if(m.sets, [](const events::DataSet& s) { return s.kind == events::SetKind::Memory; });
+    std::erase_if(m.sets, [&](const events::DataSet& s) { return s.kind == events::SetKind::Memory && s.id != m.settings.memory_set; });
     const auto id = set.id;
     m.sets.push_back(std::move(set));
     activate(m, id);
@@ -1859,7 +2049,8 @@ void show_memory(Model& m, events::DataSet set) {
 
 auto forget_row(Model& m, std::uint32_t set, std::size_t row) -> std::optional<events::Command> {
     const auto it = std::ranges::find(m.sets, set, &events::DataSet::id);
-    if (it == m.sets.end() || it->kind != events::SetKind::Memory || row >= it->rows.rows() || it->rows.columns < 3) {
+    if (it == m.sets.end() || (it->kind != events::SetKind::Memory && it->kind != events::SetKind::Private) || row >= it->rows.rows() ||
+        it->rows.columns < 3) {
         return std::nullopt;
     }
     const double id = it->rows.at(row, 2).number;
@@ -1962,6 +2153,7 @@ auto show_report(Model& m, std::string_view title, std::string text, std::option
     m.done_detail.clear();
     m.done_actions.clear();
     m.failed = false;
+    m.card = {};
     clear_work(m);
     if (set) {
         set->id = 0x80000000u | static_cast<std::uint32_t>(m.task & 0x7FFFFFFFu); // the shell's own: past the agent's ids
@@ -2066,6 +2258,7 @@ auto undo(Model& m, std::uint64_t target, std::optional<std::size_t> change) -> 
     m.done_detail.clear();
     m.done_actions.clear();
     m.failed = false;
+    m.card = {};
     clear_work(m);
     return events::Undo{m.task, target, change};
 }
@@ -2382,6 +2575,22 @@ auto permission_text(const events::Permission& p) -> std::string {
 
 auto key(Model& m, Key k, bool ctrl, bool shift, bool alt) -> Reaction {
     Reaction r;
+    if (view(m) == View::Settings && m.settings.key_open && !m.menu.open) { // Models' key field (4d-2)
+        if (k == Key::Escape) {
+            m.settings.key_open = false;
+            m.key = {};
+            m.key_error.clear();
+        } else if (k == Key::Enter) {
+            (void)submit(m);
+        } else if (k == Key::Backspace) {
+            ctrl ? backspace_word(m.key) : backspace(m.key);
+        }
+        return r;
+    }
+    if (view(m) == View::Settings && !m.private_focus && !m.filter_focus && !m.menu.open) { // the menu first (4d-2 review I2)
+        // SETTINGS_SPEC § 4: Esc closes them; no other key goes to what is behind them (final review I3).
+        return k == Key::Escape ? close_settings(m) : r;
+    }
     if (m.menu.open && !m.key_mode && !m.permission) { // MODEL_PICKER_SPEC § 8
         const std::size_t rows = menu_rows(m);
         const std::size_t last = rows == 0 ? 0 : rows - 1;

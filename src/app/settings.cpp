@@ -135,6 +135,9 @@ auto menu(const config::Config& c, const std::optional<std::string>& live, int m
     Item model{.label = "Model"};
     const auto models = ai::catalog::models(); // each by its full name, in the catalog's order
     for (unsigned i = 0; i < models.size(); ++i) {
+        if (std::ranges::find(c.ai.disabled, models[i].id) != c.ai.disabled.end() && c.ai.model != models[i].id) {
+            continue; // switched off in Models (stage 4d-2)
+        }
         model.children.push_back({.id = kModelId + i, .label = std::string{models[i].full_name}, .checked = c.ai.model == models[i].id, .radio = true});
     }
     out.push_back(std::move(model));
@@ -152,12 +155,68 @@ auto menu(const config::Config& c, const std::optional<std::string>& live, int m
                                    .radio = true});
     }
     out.push_back(std::move(budget));
-    out.push_back({.id = kApiKeyId, .label = "DeepSeek API key\xE2\x80\xA6"});
     out.push_back({.separator = true});
     // Phase 12 § 6: the user's rules (agent.md) and what the agent remembers, in the data panel.
     out.push_back({.id = kMemoryId, .label = "Rules and memory\xE2\x80\xA6"});
     out.push_back({.id = kChangeLogId, .label = "Change log\xE2\x80\xA6"});
     out.push_back({.id = kAuditId, .label = "Audit log\xE2\x80\xA6"});
+    return out;
+}
+
+namespace {
+
+// Where an item of menu() goes (stage 4d-1, SETTINGS_SPEC § 7 and the user's word on the logs):
+// a section's index, kPages for the tray, or none (a separator, Rules and memory — a section itself).
+auto place_of(const Item& item) -> std::optional<std::size_t> {
+    if (item.separator || item.id == kMemoryId) {
+        return std::nullopt;
+    }
+    const unsigned id = item.id != 0 ? item.id : item.children.empty() ? 0 : item.children.front().id;
+    if (id == kFullscreenId || (id >= kGpuId && id < kGpuId + kGpus.size())) {
+        return 0; // General
+    }
+    if ((id >= kThemeId && id < kThemeId + kThemes.size()) || (id >= kTextId && id < kTextId + kTexts.size()) ||
+        (id >= kTransparencyId && id <= kTransparencyId + config::kMostTransparency / config::kTransparencyStep) ||
+        (id >= kFrameRateId && id < kFrameRateId + kFrameRates.size())) {
+        return 1; // Appearance
+    }
+    if (id >= kBudgetId && id < kBudgetId + kBudgets.size()) {
+        return 3; // Roles (stage 4d-2)
+    }
+    if (id == kChangeLogId || id == kAuditId) {
+        return 5; // Privacy
+    }
+    if ((id >= kHotkeyId && id < kHotkeyId + kHotkeys.size()) || id == kCustomHotkeyId) {
+        return 6; // Shortcuts
+    }
+    return kPages; // the model, its thinking: the tray's own
+}
+
+} // namespace
+
+auto pages(const config::Config& c, const std::optional<std::string>& live, int monitor_hz) -> std::array<std::vector<Item>, kPages> {
+    std::array<std::vector<Item>, kPages> out;
+    for (auto& item : menu(c, live, monitor_hz)) {
+        if (const auto at = place_of(item); at && *at < kPages) {
+            out[*at].push_back(std::move(item));
+        }
+    }
+    // Models (stage 4d-2): each model of the catalog, on or off (the chosen one stays on).
+    const auto models = ai::catalog::models();
+    for (unsigned i = 0; i < models.size(); ++i) {
+        out[2].push_back({.id = kModelOnId + i, .label = std::string{models[i].full_name},
+                          .checked = std::ranges::find(c.ai.disabled, models[i].id) == c.ai.disabled.end() || c.ai.model == models[i].id});
+    }
+    return out;
+}
+
+auto tray_items(const config::Config& c) -> std::vector<Item> {
+    std::vector<Item> out;
+    for (auto& item : menu(c)) {
+        if (place_of(item) == kPages) {
+            out.push_back(std::move(item));
+        }
+    }
     return out;
 }
 
@@ -186,6 +245,15 @@ auto choose(config::Config& c, unsigned id) -> std::optional<Change> {
     } else if (id == kFullscreenId) {
         c.over_fullscreen = !c.over_fullscreen;
         ch.fullscreen = true;
+    } else if (id >= kModelOnId && id < kModelOnId + ai::catalog::models().size()) {
+        const std::string m{ai::catalog::models()[id - kModelOnId].id};
+        if (m == c.ai.model) {
+            return std::nullopt; // the chosen one stays on
+        }
+        if (std::erase(c.ai.disabled, m) == 0) {
+            c.ai.disabled.push_back(m);
+        }
+        ch.ai = true;
     } else if (id >= kModelId && id < kModelId + ai::catalog::models().size()) {
         c.ai.model = std::string{ai::catalog::models()[id - kModelId].id};
         ch.ai = true;

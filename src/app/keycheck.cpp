@@ -11,6 +11,10 @@
 
 namespace app::keycheck {
 
+auto wrong_form(const ai::catalog::Provider& p) -> std::string {
+    return std::format("That isn't a {} API key \xE2\x80\x94 it starts with {}", p.name, p.key_prefix);
+}
+
 auto looks_right(std::string_view key) -> bool {
     const auto& by = ai::catalog::default_provider(); // the form of its keys: how they start, how long at least
     const std::string_view kPrefix = by.key_prefix;
